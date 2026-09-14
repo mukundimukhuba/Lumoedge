@@ -1,4 +1,4 @@
-import{i as e,t}from"./react-B8IZ02wI.js";import{n}from"./createLucideIcon-DyCq-HOk.js";import{r}from"./apiBase-CDudBPOx.js";import{K as i,V as a,n as o,q as s}from"./index-BN3mw-4y.js";var c=e(t(),1),l=n(),u=[{id:`announce`,title:`Announcement`,subject:`Platform announcement from Lumo Edge`,body:`Important update from Lumo Edge.
+import{i as e,t}from"./react-B8IZ02wI.js";import{n}from"./createLucideIcon-DyCq-HOk.js";import{r}from"./apiBase-CDudBPOx.js";import{K as i,V as a,n as o,q as s}from"./index-BN3mw-4z.js";var c=e(t(),1),l=n(),u=[{id:`announce`,title:`Announcement`,subject:`Platform announcement from Lumo Edge`,body:`Important update from Lumo Edge.
 
 Please open the app for details.`},{id:`welcome`,title:`Welcome`,subject:`Welcome to Lumo Edge`,body:`Hi,
 

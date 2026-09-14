@@ -20,7 +20,14 @@ import { mergeDatabases } from './mergeDb.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { tryQualifyCommission, tryReverseCommission } from './commissionEngine.mjs';
-import { matchSuperPassword, mintAdminSession, SUPER_LOGIN, corsAllowHeaders } from './adminSession.mjs';
+import {
+  matchSuperPassword,
+  mintAdminSession,
+  verifyAdminSession,
+  SUPER_LOGIN,
+  corsAllowHeaders,
+} from './adminSession.mjs';
+import { loadMentorBundle } from './mentorWorkspace.mjs';
 
 /** Never let a Firebase fallback read/write hang a request — fail fast instead. */
 function withTimeout(promise, ms = 4000) {
@@ -145,6 +152,31 @@ export async function handleApi(req, res, pathname) {
       pathname,
     });
     if (commissionHandled) return true;
+
+    if (pathname === '/api/admin/workspace' && req.method === 'GET') {
+      const url = new URL(req.url || '', 'https://lumoedge.com');
+      const requested = String(
+        url.searchParams.get('adminId') || req.headers['x-lumo-admin-id'] || '',
+      ).trim();
+      const session = await verifyAdminSession(req);
+      let adminId = requested;
+      if (session.ok) {
+        if (session.role !== 'super' && requested && requested !== session.adminId) {
+          json(res, 403, { ok: false, error: 'forbidden' });
+          return true;
+        }
+        adminId = session.role === 'super' && requested ? requested : session.adminId;
+      }
+      if (!adminId) {
+        json(res, 400, { ok: false, error: 'adminId required' });
+        return true;
+      }
+      const bundle = await loadMentorBundle(adminId, {
+        read: (path) => withTimeout(firebaseRead(path), 8000),
+      });
+      json(res, 200, { ok: true, adminId, ...bundle });
+      return true;
+    }
 
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
