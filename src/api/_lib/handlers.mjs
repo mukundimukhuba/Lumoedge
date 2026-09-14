@@ -113,6 +113,11 @@ export async function handleApi(req, res, pathname) {
   }
 
   try {
+    if (pathname === '/api/github-deploy' && req.method === 'POST') {
+      const { handleGithubDeploy } = await import('./githubDeploy.mjs');
+      return handleGithubDeploy(req, res);
+    }
+
     if (pathname === '/api/health') {
       const { db, backend } = await loadDb();
       json(res, 200, {
