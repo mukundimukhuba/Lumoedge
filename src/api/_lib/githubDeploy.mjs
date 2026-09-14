@@ -1,24 +1,16 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
 const PROJECT_ID = process.env.VERCEL_PROJECT_ID || 'prj_fRIFCFi1sfhC5iELndsuekR3l3qm';
 const TEAM_ID = process.env.VERCEL_TEAM_ID || 'team_AIHT521u3r2h9DXR2QJkNQ8I';
-const REPO_TARBALL =
-  process.env.LUMO_GIT_TARBALL ||
-  'https://codeload.github.com/mukundimukhuba/Lumoedge/tar.gz/main';
-const ROOT_FILES = [
+const REPO = 'mukundimukhuba/Lumoedge';
+const ROOT_FILES = new Set([
   'index.html',
   'lumo-logo.png',
   'lumo-logo-192.png',
   'lumo-logo-email.png',
   'vercel.json',
   'package.json',
-];
+]);
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -63,114 +55,88 @@ async function vercelApi(token, method, path, body, headers = {}, raw = false) {
   return { status: resp.status, data };
 }
 
-async function walkFiles(dir, prefix) {
-  const out = [];
-  let entries = [];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return out;
-  }
-  for (const name of entries) {
-    if (name.startsWith('.')) continue;
-    const full = join(dir, name);
-    const st = await stat(full);
-    const rel = prefix ? `${prefix}/${name}` : name;
-    if (st.isDirectory()) out.push(...(await walkFiles(full, rel)));
-    else out.push({ path: rel, full });
-  }
-  return out;
+function shouldDeployPath(path) {
+  if (ROOT_FILES.has(path)) return true;
+  return path.startsWith('assets/') || path.startsWith('api/');
 }
 
-async function collectDeployFiles(extractedRoot) {
-  const files = [];
-  for (const name of ROOT_FILES) {
-    const full = join(extractedRoot, name);
-    try {
-      if ((await stat(full)).isFile()) files.push({ path: name, full });
-    } catch {
-      /* optional */
-    }
+async function listDeployPaths(sha) {
+  const ref = sha || 'main';
+  const resp = await fetch(
+    `https://api.github.com/repos/${REPO}/git/trees/${ref}?recursive=1`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'lumoedge-github-deploy',
+      },
+    },
+  );
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`github tree ${resp.status} ${JSON.stringify(data).slice(0, 200)}`);
   }
-  files.push(...(await walkFiles(join(extractedRoot, 'assets'), 'assets')));
-  files.push(...(await walkFiles(join(extractedRoot, 'api'), 'api')));
-  return files;
+  const paths = (data.tree || [])
+    .filter((item) => item && item.type === 'blob' && shouldDeployPath(item.path))
+    .map((item) => item.path);
+  if (paths.length < 5) {
+    throw new Error(`too few files: ${paths.length}`);
+  }
+  return paths;
 }
 
-async function findExtractedRoot(tmp) {
-  const names = await readdir(tmp);
-  for (const name of names) {
-    if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) continue;
-    const full = join(tmp, name);
-    try {
-      if ((await stat(full)).isDirectory()) return full;
-    } catch {
-      /* skip */
-    }
+async function fetchRepoFile(sha, path) {
+  const ref = sha || 'main';
+  const url = `https://raw.githubusercontent.com/${REPO}/${ref}/${path}`;
+  const resp = await fetch(url, { headers: { 'User-Agent': 'lumoedge-github-deploy' } });
+  if (!resp.ok) {
+    throw new Error(`github file ${path} ${resp.status}`);
   }
-  return tmp;
+  return Buffer.from(await resp.arrayBuffer());
 }
 
 async function deployFromGithub(token, sha) {
-  const tmp = await mkdtemp(join(tmpdir(), 'lumo-git-'));
-  try {
-    const tarUrl = sha
-      ? `https://codeload.github.com/mukundimukhuba/Lumoedge/tar.gz/${sha}`
-      : REPO_TARBALL;
-    const tarResp = await fetch(tarUrl, {
-      headers: { 'User-Agent': 'lumoedge-github-deploy' },
-    });
-    if (!tarResp.ok) {
-      throw new Error(`tarball ${tarResp.status}`);
-    }
-    const tarPath = join(tmp, 'repo.tar.gz');
-    await writeFile(tarPath, Buffer.from(await tarResp.arrayBuffer()));
-    await execFileAsync('tar', ['-xzf', tarPath, '-C', tmp]);
-    const root = await findExtractedRoot(tmp);
-    const specs = await collectDeployFiles(root);
-    if (specs.length < 5) {
-      throw new Error(`too few files: ${specs.length}`);
-    }
-    const uploaded = [];
-    for (const spec of specs) {
-      const content = await readFile(spec.full);
-      const sha1 = createHash('sha1').update(content).digest('hex');
-      const { status, data } = await vercelApi(
-        token,
-        'POST',
-        '/v2/files',
-        content,
-        {
-          'Content-Length': String(content.length),
-          'x-vercel-digest': sha1,
-        },
-        true,
-      );
-      if (status !== 200 && status !== 201) {
-        throw new Error(`upload ${spec.path} ${status} ${JSON.stringify(data).slice(0, 200)}`);
-      }
-      uploaded.push({ file: spec.path, sha: sha1, size: content.length });
-    }
-    const { status, data } = await vercelApi(token, 'POST', '/v13/deployments', {
-      name: 'lumoedge',
-      project: PROJECT_ID,
-      target: 'production',
-      files: uploaded,
-      meta: sha ? { githubCommitSha: sha, githubCommitRepo: 'Lumoedge' } : {},
-      projectSettings: {
-        framework: null,
-        buildCommand: 'true',
-        installCommand: 'true',
-        outputDirectory: '.',
+  const paths = await listDeployPaths(sha);
+  async function uploadOne(path) {
+    const content = await fetchRepoFile(sha, path);
+    const sha1 = createHash('sha1').update(content).digest('hex');
+    const { status, data } = await vercelApi(
+      token,
+      'POST',
+      '/v2/files',
+      content,
+      {
+        'Content-Length': String(content.length),
+        'x-vercel-digest': sha1,
       },
-    });
+      true,
+    );
     if (status !== 200 && status !== 201) {
-      throw new Error(`deploy ${status} ${JSON.stringify(data).slice(0, 400)}`);
+      throw new Error(`upload ${path} ${status} ${JSON.stringify(data).slice(0, 200)}`);
     }
-    return { id: data.id, url: data.url, files: uploaded.length };
-  } finally {
-    await rm(tmp, { recursive: true, force: true });
+    return { file: path, sha: sha1, size: content.length };
   }
+  const uploaded = [];
+  const concurrency = 8;
+  for (let i = 0; i < paths.length; i += concurrency) {
+    uploaded.push(...(await Promise.all(paths.slice(i, i + concurrency).map(uploadOne))));
+  }
+  const { status, data } = await vercelApi(token, 'POST', '/v13/deployments', {
+    name: 'lumoedge',
+    project: PROJECT_ID,
+    target: 'production',
+    files: uploaded,
+    meta: sha ? { githubCommitSha: sha, githubCommitRepo: 'Lumoedge' } : {},
+    projectSettings: {
+      framework: null,
+      buildCommand: 'true',
+      installCommand: 'true',
+      outputDirectory: '.',
+    },
+  });
+  if (status !== 200 && status !== 201) {
+    throw new Error(`deploy ${status} ${JSON.stringify(data).slice(0, 400)}`);
+  }
+  return { id: data.id, url: data.url, files: uploaded.length };
 }
 
 export async function handleGithubDeploy(req, res) {
@@ -210,13 +176,13 @@ export async function handleGithubDeploy(req, res) {
     return true;
   }
   const sha = String(payload.after || payload.head_commit?.id || '').trim();
-  // Ack immediately so GitHub does not retry while files upload to Vercel.
-  json(res, 202, { ok: true, accepted: true, sha });
   try {
     const result = await deployFromGithub(token, sha);
-    console.log('github deploy ok', result);
+    json(res, 200, { ok: true, ...result, sha });
   } catch (err) {
-    console.error('github deploy failed', err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('github deploy failed', message);
+    json(res, 500, { error: 'deploy failed', sha, message });
   }
   return true;
 }
