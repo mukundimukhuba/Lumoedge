@@ -139,11 +139,14 @@ export async function handleApi(req, res, pathname) {
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
       const [mergedClients, remoteVault] = await Promise.all([
-        loadMergedClients(loadDb),
+        withTimeout(loadMergedClients(loadDb), 5000),
         withTimeout(loadFirebaseVault(), 8000),
       ]);
       if (Array.isArray(remoteVault) && remoteVault.length) db.vault = remoteVault;
-      json(res, 200, publicDbSnapshot({ ...db, clients: mergedClients }));
+      json(res, 200, publicDbSnapshot({
+        ...db,
+        clients: Array.isArray(mergedClients) ? mergedClients : db.clients || [],
+      }));
       return true;
     }
 
