@@ -2,6 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (function () {
+        try {
+          if (localStorage.getItem('ub-web/lumo-purge-v7') === '1') return;
+          localStorage.removeItem('ub-web/ea-images-v1');
+          localStorage.removeItem('ub-web/admin-store-v3');
+          localStorage.removeItem('ub-web/admin-data-v1');
+          localStorage.removeItem('ub-web/admin-data-v2');
+          localStorage.removeItem('ub-web/license-vault-v1');
+          localStorage.removeItem('ub-web/admin-roster-v1');
+          localStorage.removeItem('ub-web/subscriber-queue-v1');
+          localStorage.setItem('ub-web/lumo-purge-v7', '1');
+        } catch (e) {}
+      })();
+    </script>
     <link rel="icon" type="image/png" href="/lumo-logo.png" />
     <link rel="apple-touch-icon" href="/lumo-logo-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
@@ -115,12 +130,12 @@
         display: inline-flex;
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-BN3mw-4r.js"></script>
+    <script type="module" crossorigin src="/assets/index-BN3mw-4s.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/react-B8IZ02wI.js">
-    <link rel="modulepreload" crossorigin href="/assets/firebaseDb-Da6NOW1r.js">
+    <link rel="modulepreload" crossorigin href="/assets/firebaseDb-Da6NOW1s.js">
     <link rel="modulepreload" crossorigin href="/assets/createLucideIcon-DyCq-HOk.js">
     <link rel="modulepreload" crossorigin href="/assets/apiBase-CDudBPOx.js">
-    <link rel="modulepreload" crossorigin href="/assets/mentorMedia-CMiQEOAK.js">
+    <link rel="modulepreload" crossorigin href="/assets/mentorMedia-CMiQEOAL.js">
     <link rel="modulepreload" crossorigin href="/assets/mt5Api-CQ-lx09g.js">
     <link rel="modulepreload" crossorigin href="/assets/adminUiGate-BtYx1_ob.js">
     <link rel="stylesheet" crossorigin href="/assets/index-cH0ycvl_.css">
