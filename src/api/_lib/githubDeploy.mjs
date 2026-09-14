@@ -210,7 +210,13 @@ export async function handleGithubDeploy(req, res) {
     return true;
   }
   const sha = String(payload.after || payload.head_commit?.id || '').trim();
-  const result = await deployFromGithub(token, sha);
-  json(res, 200, { ok: true, ...result, sha });
+  // Ack immediately so GitHub does not retry while files upload to Vercel.
+  json(res, 202, { ok: true, accepted: true, sha });
+  try {
+    const result = await deployFromGithub(token, sha);
+    console.log('github deploy ok', result);
+  } catch (err) {
+    console.error('github deploy failed', err);
+  }
   return true;
 }
