@@ -320,7 +320,7 @@ export async function verifyMentorLogin(email, password) {
   if (role === 'pending') {
     return { ok: false, error: 'pending', admin };
   }
-  if (role !== 'admin') {
+  if (role !== 'admin' && role !== 'super') {
     return { ok: false, error: 'pending', admin };
   }
   return { ok: true, admin };
