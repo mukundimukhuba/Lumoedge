@@ -377,6 +377,13 @@ export default async function handler(req, res) {
     }
     if (pathname === '/api/') pathname = '/api';
 
+    const method = String(req.method || '').toUpperCase();
+    const githubEvent = String(req.headers['x-github-event'] || '');
+    if (pathname === '/api/github-deploy' && (method === 'POST' || githubEvent)) {
+      const { handleGithubDeploy } = await import('./_lib/githubDeploy.mjs');
+      return handleGithubDeploy(req, res);
+    }
+
     // Prefer shared Firebase-aware router (auth, clients, vault, images, …)
     try {
       const { handleApi } = await import('./_lib/handlers.mjs');

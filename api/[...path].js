@@ -359,6 +359,13 @@ export default async function handler(req, res) {
       pathname = `/api${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
     }
 
+    const method = String(req.method || '').toUpperCase();
+    const githubEvent = String(req.headers['x-github-event'] || '');
+    if (pathname === '/api/github-deploy' && (method === 'POST' || githubEvent)) {
+      const { handleGithubDeploy } = await import('./_lib/githubDeploy.mjs');
+      return handleGithubDeploy(req, res);
+    }
+
     if (req.method === 'OPTIONS') {
       send(res, 204, {});
       return;
