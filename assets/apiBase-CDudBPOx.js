@@ -1,0 +1,1 @@
+import{r as e}from"./react-B8IZ02wI.js";var t=e({LIVE_APP_ORIGIN:()=>n,apiUrl:()=>i,isNativeShell:()=>r}),n=`https://lumoedge.com`;function r(){try{return!!window.Capacitor?.isNativePlatform?.()}catch{return!1}}function i(e){let t=e.startsWith(`/`)?e:`/${e}`;return typeof window>`u`||!t.startsWith(`/api`)?t:r()?`${n}${t}`:t}export{r as i,t as n,i as r,n as t};

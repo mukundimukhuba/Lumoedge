@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+.vercel
+deploy_result.json
+playwright-report/
+test-results/

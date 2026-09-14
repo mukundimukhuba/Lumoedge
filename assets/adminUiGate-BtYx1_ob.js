@@ -1,0 +1,1 @@
+import{r as e}from"./react-B8IZ02wI.js";var t=e({isAdminUiBusy:()=>o,markAdminNavBusy:()=>a,setAdminDrawerOpen:()=>i}),n=!1,r=0;function i(e){n=e}function a(e=2800){r=Math.max(r,Date.now()+e)}function o(){return n||Date.now()<r}export{i,o as n,a as r,t};
