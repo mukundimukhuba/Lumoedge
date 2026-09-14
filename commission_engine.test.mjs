@@ -465,12 +465,13 @@ test('Join cannot spoof another Admin ID and cannot write earnings', async () =>
       totalEarned: 999999,
     },
   );
-  assert.equal(joined.ok, true);
   assert.equal(joined.profile.status, 'pending');
   assert.equal(joined.profile.totalEarned, undefined);
+  assert.equal(joined.profile.rateOverride, null);
   const profile = await io.read('lumo/commissionProfiles/LM-111111');
   assert.equal(profile.totalEarned, undefined);
   assert.equal(profile.status, 'pending');
+  assert.equal(profile.rateOverride, null);
 });
 
 test('Manage All ranks multiple earners by earnings after commissions are recorded', async () => {
@@ -550,4 +551,62 @@ test('Inactive earners stop qualifying and Super Admin can change a personal rat
 test('Regular admin cannot read another earner via mentorGuard', () => {
   const denied = mentorGuard({ ok: true, adminId: 'LM-111111', role: 'admin' }, 'LM-222222');
   assert.equal(denied.ok, false);
+});
+
+test('Existing earners stay enrolled and cannot pending-lock themselves via Join', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    clients: [paidClient('keep.earning@example.com')],
+    vault: [assignedLicense('keep.earning@example.com', 'LM-111111', 'LUMO-KEEP-KEY1-AAAA')],
+  });
+  await engine.tryQualify({ email: 'keep.earning@example.com' });
+  const summary = await engine.getMentorSummary('LM-111111');
+  assert.equal(summary.enrollment.status, 'active');
+  assert.equal(summary.enrollment.canJoin, false);
+  assert.equal(summary.enrollment.canEarn, true);
+  const joined = await engine.joinProgram(
+    { adminId: 'LM-111111', role: 'admin', email: 'keep@example.com' },
+    {
+      firstName: 'Keep',
+      lastName: 'Earning',
+      email: 'keep@example.com',
+      phone: '0822222222',
+      adminId: 'LM-111111',
+      acceptTerms: true,
+      status: 'pending',
+      rateOverride: 999,
+    },
+  );
+  assert.equal(joined.ok, false);
+  const still = await engine.getMentorSummary('LM-111111');
+  assert.equal(still.totals.totalEarned, 50);
+  assert.equal(still.enrollment.canEarn, true);
+});
+
+test('Join body cannot self-activate or set a personal rate', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    auth: { admins: [{ id: 'LM-777777', email: 'new@example.com', fullName: 'New Admin', role: 'admin' }] },
+  });
+  const joined = await engine.joinProgram(
+    { adminId: 'LM-777777', role: 'admin', email: 'new@example.com' },
+    {
+      firstName: 'New',
+      lastName: 'Admin',
+      email: 'new@example.com',
+      phone: '0830000000',
+      adminId: 'LM-777777',
+      acceptTerms: true,
+      status: 'active',
+      rateOverride: 5000,
+      commissionPerReferral: 5000,
+    },
+  );
+  assert.equal(joined.ok, true);
+  assert.equal(joined.profile.status, 'pending');
+  assert.equal(joined.profile.rateOverride, null);
+  const auth = await io.read('lumo/auth');
+  assert.equal(auth.admins[0].role, 'admin');
 });

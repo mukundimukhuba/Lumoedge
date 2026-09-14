@@ -696,7 +696,7 @@ export function createCommissionEngine(io = firebaseIo) {
     const enrolled = Boolean(profile) || summary.commissions.length > 0;
     const status = profile ? normalizeProfileStatus(profile.status) : enrolled ? 'active' : 'none';
     const canEarn = profileCanEarn(profile);
-    const canJoin = !profile || status === 'rejected';
+    const canJoin = (!profile && !enrolled) || status === 'rejected';
     const effectiveRate = commissionRateFor(profile, settings);
     return {
       ...summary,
@@ -1128,6 +1128,12 @@ export function createCommissionEngine(io = firebaseIo) {
     if (existingStatus === 'inactive') {
       return { ok: false, error: 'This commission account is inactive. Ask Super Admin to reactivate it.' };
     }
+    const existingCommissions = toList(await loadCommissions()).filter(
+      (row) => String(row?.mentorId || '') === mentorId && QUALIFYING_STATUSES.has(String(row?.status || '')),
+    );
+    if (existingCommissions.length) {
+      return { ok: false, error: 'Already enrolled in the commission program.' };
+    }
 
     const admins = await loadAdmins();
     const admin = findAdmin(admins, mentorId);
@@ -1156,7 +1162,7 @@ export function createCommissionEngine(io = firebaseIo) {
       status: needsApproval ? 'pending' : 'active',
       accountType: 'admin',
       roleSnapshot: role === 'super' ? 'super' : 'admin',
-      rateOverride: existing?.rateOverride ?? null,
+      rateOverride: existing?.rateOverride ?? null, // never taken from the signup body
       joinedAt: existing?.joinedAt || now,
       appliedAt: now,
       approvedAt: needsApproval ? null : now,
