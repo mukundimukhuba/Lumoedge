@@ -8,7 +8,11 @@ export const DEFAULT_COMMISSION_SETTINGS = {
   withdrawalEnabled: true,
   holdHours: 0,
   currency: 'ZAR',
+  requireApproval: true,
 };
+
+export const PROFILE_STATUSES = new Set(['pending', 'active', 'inactive', 'rejected']);
+export const ACCOUNT_TYPES = new Set(['mentor', 'admin']);
 
 export const QUALIFYING_STATUSES = new Set(['pending', 'available', 'paid']);
 export const OPEN_PAYOUT_STATUSES = new Set(['requested', 'approved']);
@@ -100,6 +104,7 @@ export function normalizeSettings(raw, nowIso) {
         : DEFAULT_COMMISSION_SETTINGS.holdHours,
     currency: String(src.currency || DEFAULT_COMMISSION_SETTINGS.currency).trim() || 'ZAR',
     launchedAt: src.launchedAt || nowIso,
+    requireApproval: src.requireApproval === false ? false : true,
   };
 }
 
@@ -190,6 +195,139 @@ function money(amount) {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+export function clientSubscriptionAmount(client) {
+  const keys = ['subscriptionAmount', 'paidAmount', 'amount', 'price', 'planPrice', 'invoiceAmount'];
+  for (const key of keys) {
+    const n = Number(client?.[key]);
+    if (Number.isFinite(n) && n > 0) return money(n);
+  }
+  return 0;
+}
+
+export function clientDisplayName(client, email) {
+  const name = [client?.firstName, client?.lastName].filter(Boolean).join(' ').trim();
+  if (name) return name;
+  const fallback = String(client?.email || email || '').trim();
+  return fallback || 'Client';
+}
+
+export function normalizeAccountType(raw, fallback = 'mentor') {
+  const value = String(raw || '').trim().toLowerCase();
+  if (ACCOUNT_TYPES.has(value)) return value;
+  return ACCOUNT_TYPES.has(fallback) ? fallback : 'mentor';
+}
+
+export function normalizeProfileStatus(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  return PROFILE_STATUSES.has(value) ? value : 'pending';
+}
+
+export function splitAdminName(admin, profile) {
+  const first = String(profile?.firstName || '').trim();
+  const last = String(profile?.lastName || '').trim();
+  if (first || last) {
+    return {
+      firstName: first,
+      lastName: last,
+      fullName: [first, last].filter(Boolean).join(' '),
+    };
+  }
+  const full = String(admin?.fullName || admin?.mentorName || '').trim();
+  const parts = full.split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts[0] || '',
+    lastName: parts.slice(1).join(' '),
+    fullName: full || String(admin?.id || profile?.mentorId || ''),
+  };
+}
+
+export function publicProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null;
+  return {
+    mentorId: String(profile.mentorId || '').trim(),
+    firstName: String(profile.firstName || '').trim(),
+    lastName: String(profile.lastName || '').trim(),
+    fullName: [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim(),
+    email: normalizeEmail(profile.email),
+    phone: String(profile.phone || '').trim(),
+    source: String(profile.source || '').trim(),
+    status: normalizeProfileStatus(profile.status),
+    accountType: normalizeAccountType(profile.accountType),
+    roleSnapshot: String(profile.roleSnapshot || 'admin'),
+    rateOverride:
+      profile.rateOverride == null || profile.rateOverride === ''
+        ? null
+        : money(profile.rateOverride),
+    joinedAt: profile.joinedAt || null,
+    appliedAt: profile.appliedAt || null,
+    approvedAt: profile.approvedAt || null,
+    approvedBy: profile.approvedBy || null,
+    rejectedAt: profile.rejectedAt || null,
+    rejectedReason: profile.rejectedReason || null,
+    deactivatedAt: profile.deactivatedAt || null,
+    termsAcceptedAt: profile.termsAcceptedAt || null,
+    implicit: Boolean(profile.implicit),
+  };
+}
+
+export function profileCanEarn(profile) {
+  if (!profile) return true;
+  return normalizeProfileStatus(profile.status) === 'active';
+}
+
+export function rankEarners(rows) {
+  const sorted = [...(rows || [])].sort((a, b) => {
+    const earnedDiff = money(b?.totals?.totalEarned) - money(a?.totals?.totalEarned);
+    if (earnedDiff !== 0) return earnedDiff;
+    const refDiff =
+      (Number(b?.totals?.qualifyingReferrals) || 0) - (Number(a?.totals?.qualifyingReferrals) || 0);
+    if (refDiff !== 0) return refDiff;
+    return String(a?.mentorId || '').localeCompare(String(b?.mentorId || ''));
+  });
+  return sorted.map((row, index) => ({ ...row, rank: index + 1 }));
+}
+
+export function matchesEarnerSearch(row, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    row.fullName,
+    row.firstName,
+    row.lastName,
+    row.email,
+    row.mentorId,
+    row.id,
+  ]
+    .join(' ')
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+export function filterEarners(rows, filter) {
+  const key = String(filter || 'all')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+  const list = Array.isArray(rows) ? rows : [];
+  if (!key || key === 'all') return list;
+  if (key === 'mentors') return list.filter((row) => row.accountType === 'mentor');
+  if (key === 'admins') return list.filter((row) => row.accountType === 'admin');
+  if (key === 'active') return list.filter((row) => row.status === 'active');
+  if (key === 'inactive') return list.filter((row) => row.status === 'inactive' || row.status === 'rejected');
+  if (key === 'highest earners' || key === 'highest') {
+    return list.filter((row) => money(row?.totals?.totalEarned) > 0);
+  }
+  if (key === 'pending payouts' || key === 'pending') {
+    return list.filter(
+      (row) => money(row?.totals?.pending) > 0 || Boolean(row?.openPayout),
+    );
+  }
+  if (key === 'pending approval' || key === 'applications') {
+    return list.filter((row) => row.status === 'pending');
+  }
+  return list;
+}
+
 function commissionsMap(raw) {
   if (!raw || typeof raw !== 'object') return {};
   if (Array.isArray(raw)) {
@@ -252,6 +390,53 @@ export function createCommissionEngine(io = firebaseIo) {
 
   async function loadAudit() {
     return objectMap(await io.read('lumo/commissionAudit'));
+  }
+
+  async function loadProfiles() {
+    return objectMap(await io.read('lumo/commissionProfiles'));
+  }
+
+  async function loadAdmins() {
+    const auth = (await io.read('lumo/auth')) || {};
+    return toList(auth.admins);
+  }
+
+  function findAdmin(admins, mentorId) {
+    const id = String(mentorId || '').trim();
+    if (!id) return null;
+    return (
+      admins.find((row) => String(row?.id || '').trim() === id) ||
+      admins.find((row) => normalizeEmail(row?.email) === normalizeEmail(id)) ||
+      null
+    );
+  }
+
+  async function saveProfile(row) {
+    const mentorId = String(row?.mentorId || '').trim();
+    if (!mentorId) return null;
+    await io.write(`lumo/commissionProfiles/${mentorId}`, row);
+    return row;
+  }
+
+  function commissionRateFor(profile, settings) {
+    const override = profile?.rateOverride;
+    if (override == null || override === '') return money(settings.commissionPerReferral);
+    const n = Number(override);
+    return Number.isFinite(n) && n >= 0 ? money(n) : money(settings.commissionPerReferral);
+  }
+
+  function enrichCommission(row, clients) {
+    if (!row || typeof row !== 'object') return row;
+    const client =
+      toList(clients).find((item) => String(item?.id || '') === String(row.clientRef || '')) ||
+      toList(clients).find((item) => clientRefFor(item, item?.email) === String(row.clientRef || '')) ||
+      null;
+    return {
+      ...row,
+      clientName: row.clientName || (client ? clientDisplayName(client, client.email) : row.clientRef || 'Client'),
+      subscriptionAmount:
+        row.subscriptionAmount != null ? money(row.subscriptionAmount) : clientSubscriptionAmount(client),
+    };
   }
 
   async function writeAudit(entry) {
@@ -353,13 +538,21 @@ export function createCommissionEngine(io = firebaseIo) {
       return { ok: true, created: false, reason: 'no_license' };
     }
 
+    const profiles = await loadProfiles();
+    const profile = profiles[assigned.mentorId] || null;
+    if (!profileCanEarn(profile)) {
+      return { ok: true, created: false, reason: 'not_enrolled', mentorId: assigned.mentorId };
+    }
+
     const holdHours = Number(settings.holdHours) || 0;
     const createdAt = nowIso();
     const availableAt = new Date(parseIsoMs(createdAt) + holdHours * 3600 * 1000).toISOString();
     const status = holdHours > 0 ? 'pending' : 'available';
+    const amount = commissionRateFor(profile, settings);
     const commission = {
       eventId,
       mentorId: assigned.mentorId,
+      accountType: normalizeAccountType(profile?.accountType, 'mentor'),
       eaId: String(assigned.license.eaId || '').trim(),
       eaName: String(assigned.license.eaName || '').trim(),
       licenseKeyRef: maskLicenseKey(assigned.license.key),
@@ -368,8 +561,10 @@ export function createCommissionEngine(io = firebaseIo) {
         .replace(/[^A-Z0-9]/g, '')
         .slice(-8),
       clientRef: clientRefFor(client, normalized),
+      clientName: clientDisplayName(client, normalized),
       paymentRef: String(client?.id || eventId),
-      amount: money(settings.commissionPerReferral),
+      subscriptionAmount: clientSubscriptionAmount(client),
+      amount,
       currency: settings.currency,
       status,
       source: source === 'payment' ? 'payment' : 'claim',
@@ -455,6 +650,7 @@ export function createCommissionEngine(io = firebaseIo) {
         pending: money(pending),
         paidOut: money(paidOut),
         qualifyingReferrals: qualifying,
+        successfulSubscriptions: qualifying,
       },
       progress,
       canRequestPayout: canRequest,
@@ -490,7 +686,37 @@ export function createCommissionEngine(io = firebaseIo) {
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
     const detailsMap = await loadPayoutDetails();
-    return summarizeMentor(promoted.map, payouts, detailsMap[mentorId] || null, settings, mentorId);
+    const profiles = await loadProfiles();
+    const admins = await loadAdmins();
+    const clients = toList(await io.read('lumo/clients'));
+    const profile = profiles[mentorId] || null;
+    const admin = findAdmin(admins, mentorId) || { id: mentorId };
+    const names = splitAdminName(admin, profile);
+    const summary = summarizeMentor(promoted.map, payouts, detailsMap[mentorId] || null, settings, mentorId);
+    const enrolled = Boolean(profile) || summary.commissions.length > 0;
+    const status = profile ? normalizeProfileStatus(profile.status) : enrolled ? 'active' : 'none';
+    const canEarn = profileCanEarn(profile);
+    const canJoin = !profile || status === 'rejected';
+    const effectiveRate = commissionRateFor(profile, settings);
+    return {
+      ...summary,
+      commissions: summary.commissions.map((row) => enrichCommission(row, clients)),
+      enrollment: {
+        enrolled,
+        canJoin,
+        canEarn,
+        status,
+        accountType: normalizeAccountType(profile?.accountType, enrolled ? 'mentor' : 'admin'),
+        rate: effectiveRate,
+        joinedAt: profile?.joinedAt || null,
+        appliedAt: profile?.appliedAt || null,
+        approvedAt: profile?.approvedAt || null,
+        profile: publicProfile(profile),
+        fullName: names.fullName || mentorId,
+        email: normalizeEmail(profile?.email || admin.email),
+        phone: String(profile?.phone || '').trim(),
+      },
+    };
   }
 
   async function savePayoutDetails(mentorId, input) {
@@ -649,23 +875,87 @@ export function createCommissionEngine(io = firebaseIo) {
     return { ok: true, commission: row };
   }
 
-  async function getAdminOverview({ mentorQuery = '', referenceQuery = '', status = '', from = '', to = '' } = {}) {
+  function buildEarnerRow({ mentorId, admin, profile, summary, settings }) {
+    const names = splitAdminName(admin, profile);
+    const status = profile
+      ? normalizeProfileStatus(profile.status)
+      : summary.commissions.length > 0
+        ? 'active'
+        : 'active';
+    const accountType = normalizeAccountType(
+      profile?.accountType,
+      profile ? 'admin' : 'mentor',
+    );
+    const firstCommission = [...summary.commissions].sort(
+      (a, b) => parseIsoMs(a.createdAt) - parseIsoMs(b.createdAt),
+    )[0];
+    return {
+      mentorId,
+      id: mentorId,
+      firstName: names.firstName,
+      lastName: names.lastName,
+      fullName: names.fullName || mentorId,
+      email: normalizeEmail(profile?.email || admin?.email),
+      phone: String(profile?.phone || '').trim(),
+      accountType,
+      systemRole: String(admin?.role || profile?.roleSnapshot || 'admin'),
+      status,
+      rate: commissionRateFor(profile, settings),
+      joinedAt: profile?.joinedAt || admin?.createdAt || firstCommission?.createdAt || null,
+      appliedAt: profile?.appliedAt || null,
+      approvedAt: profile?.approvedAt || null,
+      totals: summary.totals,
+      progress: summary.progress,
+      payoutDetails: summary.payoutDetails,
+      openPayout: summary.openPayout
+        ? {
+            payoutId: summary.openPayout.payoutId,
+            amount: summary.openPayout.amount,
+            status: summary.openPayout.status,
+            requestedAt: summary.openPayout.requestedAt,
+          }
+        : null,
+      canRequestPayout: summary.canRequestPayout,
+      referrals: summary.totals.qualifyingReferrals,
+      successfulSubscriptions: summary.totals.successfulSubscriptions,
+    };
+  }
+
+  async function enrolledIds(promotedMap, payouts, detailsMap, profiles) {
+    const ids = new Set();
+    for (const id of Object.keys(profiles || {})) {
+      if (id) ids.add(String(id));
+    }
+    for (const row of toList(promotedMap)) {
+      if (row?.mentorId) ids.add(String(row.mentorId));
+    }
+    for (const row of toList(payouts)) {
+      if (row?.mentorId) ids.add(String(row.mentorId));
+    }
+    for (const id of Object.keys(detailsMap || {})) {
+      if (id) ids.add(String(id));
+    }
+    return ids;
+  }
+
+  async function getAdminOverview({
+    mentorQuery = '',
+    referenceQuery = '',
+    status = '',
+    from = '',
+    to = '',
+    filter = 'all',
+  } = {}) {
     const settings = await ensureSettings();
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
     const detailsMap = await loadPayoutDetails();
-    const auth = (await io.read('lumo/auth')) || {};
-    const mentors = toList(auth.admins).filter((row) => {
-      const role = String(row?.role || '').toLowerCase();
-      return role === 'admin' || role === 'super';
-    });
-    const mentorIds = new Set(mentors.map((row) => String(row.id || '').trim()).filter(Boolean));
-    for (const row of toList(promoted.map)) {
-      if (row?.mentorId) mentorIds.add(String(row.mentorId));
-    }
-    for (const id of Object.keys(detailsMap)) mentorIds.add(id);
+    const profiles = await loadProfiles();
+    const admins = await loadAdmins();
+    const clients = toList(await io.read('lumo/clients'));
+    const mentorIds = await enrolledIds(promoted.map, payouts, detailsMap, profiles);
 
-    const q = String(mentorQuery || '').trim().toLowerCase();
+    const q = String(mentorQuery || '').trim();
     const ref = String(referenceQuery || '').trim().toLowerCase();
     const statusFilter = String(status || '').trim().toLowerCase();
     const fromMs = parseIsoMs(from);
@@ -673,41 +963,31 @@ export function createCommissionEngine(io = firebaseIo) {
 
     const mentorRows = [];
     for (const mentorId of mentorIds) {
-      const admin = mentors.find((row) => String(row.id) === mentorId) || { id: mentorId };
-      const hay = [admin.id, admin.fullName, admin.email, admin.mentorName].join(' ').toLowerCase();
-      if (q && !hay.includes(q) && mentorId.toLowerCase() !== q) continue;
+      const admin = findAdmin(admins, mentorId) || { id: mentorId };
+      const profile = profiles[mentorId] || null;
       const summary = summarizeMentor(promoted.map, payouts, detailsMap[mentorId] || null, settings, mentorId);
-      mentorRows.push({
-        mentorId,
-        fullName: admin.fullName || admin.mentorName || '',
-        email: admin.email || '',
-        totals: summary.totals,
-        progress: summary.progress,
-        payoutDetails: summary.payoutDetails,
-        openPayout: summary.openPayout
-          ? {
-              payoutId: summary.openPayout.payoutId,
-              amount: summary.openPayout.amount,
-              status: summary.openPayout.status,
-              requestedAt: summary.openPayout.requestedAt,
-            }
-          : null,
-        canRequestPayout: summary.canRequestPayout,
-      });
+      mentorRows.push(buildEarnerRow({ mentorId, admin, profile, summary, settings }));
     }
+
+    const ranked = rankEarners(mentorRows);
+    const searched = ranked.filter((row) => matchesEarnerSearch(row, q));
+    const filtered = filterEarners(searched, filter);
 
     const history = toList(promoted.map)
       .filter((row) => !(row.reason === 'previously_paid' && money(row.amount) === 0))
+      .map((row) => enrichCommission(row, clients))
       .filter((row) => {
         if (q) {
-          const allowedIds = new Set(mentorRows.map((item) => item.mentorId));
-          if (!allowedIds.has(row.mentorId) && !String(row.mentorId || '').toLowerCase().includes(q)) return false;
+          const allowedIds = new Set(searched.map((item) => item.mentorId));
+          if (!allowedIds.has(row.mentorId) && !String(row.mentorId || '').toLowerCase().includes(q.toLowerCase())) {
+            return false;
+          }
         }
         if (statusFilter && String(row.status || '').toLowerCase() !== statusFilter) return false;
         if (fromMs && parseIsoMs(row.createdAt) < fromMs) return false;
         if (toMs && parseIsoMs(row.createdAt) > toMs + 24 * 3600 * 1000) return false;
         if (ref) {
-          const blob = [row.eventId, row.clientRef, row.licenseKeyRef, row.paymentRef, row.mentorId, row.eaName]
+          const blob = [row.eventId, row.clientRef, row.clientName, row.licenseKeyRef, row.paymentRef, row.mentorId, row.eaName]
             .join(' ')
             .toLowerCase();
           if (!blob.includes(ref)) return false;
@@ -722,7 +1002,7 @@ export function createCommissionEngine(io = firebaseIo) {
         if (statusFilter && ['requested', 'approved', 'paid', 'rejected'].includes(statusFilter) && String(row.status) !== statusFilter) {
           return false;
         }
-        if (q && String(row.mentorId || '').toLowerCase() !== q && !String(row.mentorId || '').toLowerCase().includes(q)) {
+        if (q && !matchesEarnerSearch({ mentorId: row.mentorId, fullName: '', email: '', firstName: '', lastName: '', id: row.mentorId }, q)) {
           return false;
         }
         if (ref) {
@@ -739,7 +1019,7 @@ export function createCommissionEngine(io = firebaseIo) {
 
     const audit = toList(await loadAudit()).sort((a, b) => parseIsoMs(b.timestamp) - parseIsoMs(a.timestamp));
 
-    const totals = mentorRows.reduce(
+    const totals = ranked.reduce(
       (acc, row) => {
         acc.totalEarned += row.totals.totalEarned;
         acc.pending += row.totals.pending;
@@ -751,6 +1031,10 @@ export function createCommissionEngine(io = firebaseIo) {
       { totalEarned: 0, pending: 0, available: 0, paidOut: 0, qualifyingReferrals: 0 },
     );
 
+    const visibleEarners = ranked.filter((row) => row.status !== 'rejected');
+    const top = ranked[0] || null;
+    const applications = ranked.filter((row) => row.status === 'pending');
+
     return {
       settings,
       totals: {
@@ -759,13 +1043,281 @@ export function createCommissionEngine(io = firebaseIo) {
         available: money(totals.available),
         paidOut: money(totals.paidOut),
         qualifyingReferrals: totals.qualifyingReferrals,
-        mentorCount: mentorRows.length,
+        mentorCount: visibleEarners.length,
+        earnerCount: visibleEarners.length,
       },
-      mentors: mentorRows,
+      dashboard: {
+        totalEarners: visibleEarners.length,
+        totalCommissionsGenerated: money(totals.totalEarned),
+        totalPaid: money(totals.paidOut),
+        totalPending: money(totals.pending),
+        topEarner: top
+          ? {
+              rank: top.rank,
+              mentorId: top.mentorId,
+              fullName: top.fullName,
+              totalEarned: top.totals.totalEarned,
+            }
+          : null,
+      },
+      mentors: filtered,
+      earners: filtered,
+      applications,
       commissions: history,
       payouts: payoutHistory,
       audit: audit.slice(0, 300),
+      sort: 'totalEarned_desc',
     };
+  }
+
+  async function getEarnerProfile(mentorId) {
+    const id = String(mentorId || '').trim();
+    if (!id) return { ok: false, error: 'mentorId required' };
+    const settings = await ensureSettings();
+    const promoted = await promoteHeld(await loadCommissions());
+    const payouts = await loadPayouts();
+    const detailsMap = await loadPayoutDetails();
+    const profiles = await loadProfiles();
+    const admins = await loadAdmins();
+    const clients = toList(await io.read('lumo/clients'));
+    const overview = await getAdminOverview();
+    const ranked = overview.earners.find((row) => row.mentorId === id) || overview.applications.find((row) => row.mentorId === id);
+    const allRanked = rankEarners(
+      (overview.earners || []).concat(overview.applications || []).filter(
+        (row, index, list) => list.findIndex((item) => item.mentorId === row.mentorId) === index,
+      ),
+    );
+    const admin = findAdmin(admins, id) || { id };
+    const profile = profiles[id] || null;
+    const summary = summarizeMentor(promoted.map, payouts, detailsMap[id] || null, settings, id);
+    const row = buildEarnerRow({ mentorId: id, admin, profile, summary, settings });
+    const rankedRow = allRanked.find((item) => item.mentorId === id) || ranked || { ...row, rank: null };
+    return {
+      ok: true,
+      profile: {
+        ...row,
+        rank: rankedRow.rank || null,
+        rate: commissionRateFor(profile, settings),
+        commissionHistory: summary.commissions.map((item) => enrichCommission(item, clients)),
+        payoutHistory: summary.payouts.map((item) => {
+          const { payoutDetailsFull, ...rest } = item;
+          return rest;
+        }),
+        dateJoined: row.joinedAt,
+        currentStatus: row.status,
+      },
+    };
+  }
+
+  async function joinProgram(sessionAdmin, input = {}) {
+    const mentorId = String(sessionAdmin?.adminId || '').trim();
+    const role = String(sessionAdmin?.role || 'admin').toLowerCase();
+    if (!mentorId) return { ok: false, error: 'Admin ID required' };
+    if (input.acceptTerms !== true) {
+      return { ok: false, error: 'Accept the Commission Program Terms to continue.' };
+    }
+    const requestedId = String(input.adminId || mentorId).trim();
+    if (requestedId !== mentorId) {
+      return { ok: false, error: 'Admin ID must match your signed-in account.' };
+    }
+    const profiles = await loadProfiles();
+    const existing = profiles[mentorId];
+    const existingStatus = existing ? normalizeProfileStatus(existing.status) : '';
+    if (existingStatus === 'active') return { ok: false, error: 'Already enrolled in the commission program.' };
+    if (existingStatus === 'pending') return { ok: false, error: 'Application already pending approval.' };
+    if (existingStatus === 'inactive') {
+      return { ok: false, error: 'This commission account is inactive. Ask Super Admin to reactivate it.' };
+    }
+
+    const admins = await loadAdmins();
+    const admin = findAdmin(admins, mentorId);
+    const names = splitAdminName(admin, {
+      firstName: input.firstName,
+      lastName: input.lastName,
+    });
+    const firstName = names.firstName;
+    const lastName = names.lastName;
+    const email = normalizeEmail(input.email) || normalizeEmail(admin?.email) || normalizeEmail(sessionAdmin.email);
+    const phone = String(input.phone || input.phoneNumber || '').trim();
+    if (!firstName || !lastName || !email || !phone) {
+      return { ok: false, error: 'First name, last name, email, and phone number are required.' };
+    }
+
+    const settings = await ensureSettings();
+    const needsApproval = settings.requireApproval !== false && role !== 'super';
+    const now = nowIso();
+    const profile = {
+      mentorId,
+      firstName,
+      lastName,
+      email,
+      phone,
+      source: String(input.source || input.referralSource || '').trim(),
+      status: needsApproval ? 'pending' : 'active',
+      accountType: 'admin',
+      roleSnapshot: role === 'super' ? 'super' : 'admin',
+      rateOverride: existing?.rateOverride ?? null,
+      joinedAt: existing?.joinedAt || now,
+      appliedAt: now,
+      approvedAt: needsApproval ? null : now,
+      approvedBy: needsApproval ? null : 'auto',
+      rejectedAt: null,
+      rejectedReason: null,
+      deactivatedAt: null,
+      termsAcceptedAt: now,
+    };
+    await saveProfile(profile);
+    await writeAudit({
+      action: needsApproval ? 'commission_application_submitted' : 'commission_profile_activated',
+      actorId: mentorId,
+      reason: 'Joined commission program',
+      meta: { mentorId, status: profile.status, roleUnchanged: true },
+    });
+    return { ok: true, profile: publicProfile(profile), roleUnchanged: true };
+  }
+
+  async function reviewApplication(mentorId, action, { actorId, reason } = {}) {
+    const id = String(mentorId || '').trim();
+    if (!id) return { ok: false, error: 'mentorId required' };
+    const profiles = await loadProfiles();
+    const existing = profiles[id];
+    if (!existing) return { ok: false, error: 'Application not found' };
+    if (action === 'approve') {
+      const next = {
+        ...existing,
+        status: 'active',
+        approvedAt: nowIso(),
+        approvedBy: actorId || 'super',
+        rejectedAt: null,
+        rejectedReason: null,
+        deactivatedAt: null,
+      };
+      await saveProfile(next);
+      await writeAudit({
+        action: 'commission_application_approved',
+        actorId: actorId || 'super',
+        reason: reason || 'Commission application approved',
+        meta: { mentorId: id, roleUnchanged: true },
+      });
+      return { ok: true, profile: publicProfile(next) };
+    }
+    if (action === 'reject') {
+      const next = {
+        ...existing,
+        status: 'rejected',
+        rejectedAt: nowIso(),
+        rejectedReason: String(reason || 'Rejected by Super Admin').trim(),
+      };
+      await saveProfile(next);
+      await writeAudit({
+        action: 'commission_application_rejected',
+        actorId: actorId || 'super',
+        reason: next.rejectedReason,
+        meta: { mentorId: id, roleUnchanged: true },
+      });
+      return { ok: true, profile: publicProfile(next) };
+    }
+    return { ok: false, error: 'Unknown application action' };
+  }
+
+  async function setProfileStatus(mentorId, status, { actorId, reason } = {}) {
+    const id = String(mentorId || '').trim();
+    const nextStatus = normalizeProfileStatus(status);
+    if (!id) return { ok: false, error: 'mentorId required' };
+    if (nextStatus !== 'active' && nextStatus !== 'inactive') {
+      return { ok: false, error: 'Status must be active or inactive' };
+    }
+    const profiles = await loadProfiles();
+    const admins = await loadAdmins();
+    const admin = findAdmin(admins, id) || { id };
+    const names = splitAdminName(admin, profiles[id]);
+    const existing = profiles[id] || {
+      mentorId: id,
+      firstName: names.firstName,
+      lastName: names.lastName,
+      email: normalizeEmail(admin.email),
+      phone: '',
+      source: '',
+      accountType: 'mentor',
+      roleSnapshot: String(admin.role || 'admin'),
+      rateOverride: null,
+      joinedAt: nowIso(),
+    };
+    const next = {
+      ...existing,
+      mentorId: id,
+      status: nextStatus,
+      approvedAt: nextStatus === 'active' ? existing.approvedAt || nowIso() : existing.approvedAt || null,
+      approvedBy: nextStatus === 'active' ? existing.approvedBy || actorId || 'super' : existing.approvedBy || null,
+      deactivatedAt: nextStatus === 'inactive' ? nowIso() : null,
+    };
+    await saveProfile(next);
+    await writeAudit({
+      action: nextStatus === 'active' ? 'commission_profile_activated' : 'commission_profile_deactivated',
+      actorId: actorId || 'super',
+      reason: reason || (nextStatus === 'active' ? 'Commission earner activated' : 'Commission earner deactivated'),
+      meta: { mentorId: id, roleUnchanged: true },
+    });
+    return { ok: true, profile: publicProfile(next) };
+  }
+
+  async function setProfileRate(mentorId, rate, { actorId } = {}) {
+    const id = String(mentorId || '').trim();
+    if (!id) return { ok: false, error: 'mentorId required' };
+    const value = rate == null || rate === '' ? null : Number(rate);
+    if (value != null && (!Number.isFinite(value) || value < 0)) {
+      return { ok: false, error: 'Commission rate must be 0 or greater' };
+    }
+    const profiles = await loadProfiles();
+    const admins = await loadAdmins();
+    const admin = findAdmin(admins, id) || { id };
+    const names = splitAdminName(admin, profiles[id]);
+    const existing = profiles[id] || {
+      mentorId: id,
+      firstName: names.firstName,
+      lastName: names.lastName,
+      email: normalizeEmail(admin.email),
+      status: 'active',
+      accountType: 'mentor',
+      roleSnapshot: String(admin.role || 'admin'),
+      joinedAt: nowIso(),
+    };
+    const next = {
+      ...existing,
+      mentorId: id,
+      status: existing.status || 'active',
+      rateOverride: value,
+    };
+    await saveProfile(next);
+    await writeAudit({
+      action: 'commission_rate_updated',
+      actorId: actorId || 'super',
+      reason: 'Per-earner commission rate updated',
+      meta: { mentorId: id, rateOverride: value },
+    });
+    return { ok: true, profile: publicProfile(next) };
+  }
+
+  async function markCommissionPaid(eventId, { actorId } = {}) {
+    const id = String(eventId || '').trim();
+    if (!id) return { ok: false, error: 'eventId required' };
+    const all = await loadCommissions();
+    const row = all[id];
+    if (!row) return { ok: false, error: 'Commission not found' };
+    const status = String(row.status || '');
+    if (status === 'reversed' || status === 'rejected') {
+      return { ok: false, error: 'Cannot mark this commission as paid' };
+    }
+    if (status === 'paid') return { ok: true, commission: row };
+    const next = { ...row, status: 'paid', paidAt: nowIso() };
+    await saveCommission(next);
+    await writeAudit({
+      action: 'commission_marked_paid',
+      actorId: actorId || 'super',
+      commissionId: id,
+      reason: 'Super Admin marked commission as paid',
+    });
+    return { ok: true, commission: next };
   }
 
   async function getAudit(limit = 200) {
@@ -790,6 +1342,12 @@ export function createCommissionEngine(io = firebaseIo) {
     processPayout,
     addAdjustment,
     getAdminOverview,
+    getEarnerProfile,
+    joinProgram,
+    reviewApplication,
+    setProfileStatus,
+    setProfileRate,
+    markCommissionPaid,
     getAudit,
     getPayoutForAdmin,
     writeAudit,

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createCommissionEngine, commissionEventId, withdrawalProgress } from './api/_lib/commissionEngine.mjs';
+import {
+  createCommissionEngine,
+  commissionEventId,
+  withdrawalProgress,
+  rankEarners,
+  filterEarners,
+} from './api/_lib/commissionEngine.mjs';
 import { mentorGuard } from './api/_lib/commissionRoutes.mjs';
 
 function createMemoryIo(now = '2026-09-14T12:00:00.000Z') {
@@ -331,4 +337,217 @@ test('Payout details stay masked and amount cannot be chosen by the mentor', asy
   assert.equal(payout.payout.amount, 250);
   assert.equal(payout.payout.payoutDetails.accountNumberMasked, '••••4455');
   assert.equal(payout.payout.payoutDetailsFull, undefined);
+});
+
+test('Default ranking is highest total earnings first, never alphabetical', () => {
+  const ranked = rankEarners([
+    { mentorId: 'LM-SARAH', fullName: 'Sarah', totals: { totalEarned: 4200, qualifyingReferrals: 10 } },
+    { mentorId: 'LM-JOHN', fullName: 'John', totals: { totalEarned: 12500, qualifyingReferrals: 25 } },
+    { mentorId: 'LM-MIKE', fullName: 'Mike', totals: { totalEarned: 8400, qualifyingReferrals: 18 } },
+  ]);
+  assert.deepEqual(
+    ranked.map((row) => [row.rank, row.fullName, row.totals.totalEarned]),
+    [
+      [1, 'John', 12500],
+      [2, 'Mike', 8400],
+      [3, 'Sarah', 4200],
+    ],
+  );
+});
+
+test('Earner filters cover mentors, admins, active, inactive, highest, and pending payouts', () => {
+  const rows = [
+    {
+      mentorId: 'A',
+      accountType: 'mentor',
+      status: 'active',
+      totals: { totalEarned: 100, pending: 0 },
+      openPayout: null,
+    },
+    {
+      mentorId: 'B',
+      accountType: 'admin',
+      status: 'inactive',
+      totals: { totalEarned: 0, pending: 40 },
+      openPayout: { payoutId: 'po_1' },
+    },
+  ];
+  assert.equal(filterEarners(rows, 'mentors').length, 1);
+  assert.equal(filterEarners(rows, 'admins')[0].mentorId, 'B');
+  assert.equal(filterEarners(rows, 'active')[0].mentorId, 'A');
+  assert.equal(filterEarners(rows, 'inactive')[0].mentorId, 'B');
+  assert.equal(filterEarners(rows, 'highest earners').length, 1);
+  assert.equal(filterEarners(rows, 'pending payouts').length, 1);
+});
+
+test('Regular admin join stays pending, does not grant Super Admin, and cannot earn until approved', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    auth: {
+      admins: [
+        { id: 'LM-999001', email: 'regular@example.com', fullName: 'Rita Admin', role: 'admin' },
+      ],
+    },
+    clients: [paidClient('ref.join@example.com')],
+    vault: [assignedLicense('ref.join@example.com', 'LM-999001', 'LUMO-JOIN-KEY1-AAAA')],
+  });
+  const joined = await engine.joinProgram(
+    { adminId: 'LM-999001', role: 'admin', email: 'regular@example.com' },
+    {
+      firstName: 'Rita',
+      lastName: 'Admin',
+      email: 'regular@example.com',
+      phone: '0820000000',
+      adminId: 'LM-999001',
+      source: 'portal',
+      acceptTerms: true,
+    },
+  );
+  assert.equal(joined.ok, true);
+  assert.equal(joined.profile.status, 'pending');
+  assert.equal(joined.profile.accountType, 'admin');
+  assert.equal(joined.roleUnchanged, true);
+  const authAfter = await io.read('lumo/auth');
+  assert.equal(authAfter.admins[0].role, 'admin');
+  const skipped = await engine.tryQualify({ email: 'ref.join@example.com', source: 'payment' });
+  assert.equal(skipped.created, false);
+  assert.equal(skipped.reason, 'not_enrolled');
+  const approved = await engine.reviewApplication('LM-999001', 'approve', { actorId: 'LM-004821' });
+  assert.equal(approved.ok, true);
+  assert.equal(approved.profile.status, 'active');
+  const created = await engine.tryQualify({ email: 'ref.join@example.com', source: 'payment' });
+  assert.equal(created.created, true);
+  assert.equal(created.commission.amount, 50);
+  assert.equal(created.commission.mentorId, 'LM-999001');
+  const summary = await engine.getMentorSummary('LM-999001');
+  assert.equal(summary.totals.totalEarned, 50);
+  assert.equal(summary.totals.qualifyingReferrals, 1);
+  assert.equal(summary.enrollment.status, 'active');
+  const overview = await engine.getAdminOverview();
+  assert.equal(overview.sort, 'totalEarned_desc');
+  assert.equal(overview.earners[0].mentorId, 'LM-999001');
+  assert.equal(overview.earners[0].rank, 1);
+  assert.equal(overview.dashboard.topEarner.mentorId, 'LM-999001');
+  assert.equal(overview.dashboard.totalEarners, 1);
+});
+
+test('Join cannot spoof another Admin ID and cannot write earnings', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    auth: {
+      admins: [{ id: 'LM-111111', email: 'me@example.com', fullName: 'Me Mentor', role: 'admin' }],
+    },
+  });
+  const spoof = await engine.joinProgram(
+    { adminId: 'LM-111111', role: 'admin', email: 'me@example.com' },
+    {
+      firstName: 'Me',
+      lastName: 'Mentor',
+      email: 'me@example.com',
+      phone: '0821111111',
+      adminId: 'LM-004821',
+      acceptTerms: true,
+      totalEarned: 999999,
+    },
+  );
+  assert.equal(spoof.ok, false);
+  const joined = await engine.joinProgram(
+    { adminId: 'LM-111111', role: 'admin', email: 'me@example.com' },
+    {
+      firstName: 'Me',
+      lastName: 'Mentor',
+      email: 'me@example.com',
+      phone: '0821111111',
+      adminId: 'LM-111111',
+      acceptTerms: true,
+      totalEarned: 999999,
+    },
+  );
+  assert.equal(joined.ok, true);
+  assert.equal(joined.profile.status, 'pending');
+  assert.equal(joined.profile.totalEarned, undefined);
+  const profile = await io.read('lumo/commissionProfiles/LM-111111');
+  assert.equal(profile.totalEarned, undefined);
+  assert.equal(profile.status, 'pending');
+});
+
+test('Manage All ranks multiple earners by earnings after commissions are recorded', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  const clients = [
+    paidClient('john1@example.com'),
+    paidClient('john2@example.com'),
+    paidClient('mike1@example.com'),
+  ];
+  const vault = [
+    assignedLicense('john1@example.com', 'LM-JOHN', 'LUMO-JOHN-KEY1-AAAA'),
+    assignedLicense('john2@example.com', 'LM-JOHN', 'LUMO-JOHN-KEY2-AAAA'),
+    assignedLicense('mike1@example.com', 'LM-MIKE', 'LUMO-MIKE-KEY1-AAAA'),
+  ];
+  await seedBase(io, {
+    auth: {
+      admins: [
+        { id: 'LM-JOHN', email: 'john@example.com', fullName: 'John', role: 'admin' },
+        { id: 'LM-MIKE', email: 'mike@example.com', fullName: 'Mike', role: 'admin' },
+        { id: 'LM-SARAH', email: 'sarah@example.com', fullName: 'Sarah', role: 'admin' },
+      ],
+    },
+    clients,
+    vault,
+  });
+  await engine.setProfileStatus('LM-JOHN', 'active', { actorId: 'LM-004821' });
+  await engine.setProfileStatus('LM-MIKE', 'active', { actorId: 'LM-004821' });
+  await engine.setProfileStatus('LM-SARAH', 'active', { actorId: 'LM-004821' });
+  await engine.tryQualify({ email: 'john1@example.com' });
+  await engine.tryQualify({ email: 'john2@example.com' });
+  await engine.tryQualify({ email: 'mike1@example.com' });
+  const overview = await engine.getAdminOverview();
+  assert.deepEqual(
+    overview.earners.map((row) => row.fullName),
+    ['John', 'Mike', 'Sarah'],
+  );
+  assert.equal(overview.earners[0].totals.totalEarned, 100);
+  assert.equal(overview.earners[1].totals.totalEarned, 50);
+  assert.equal(overview.earners[2].totals.totalEarned, 0);
+  assert.equal(overview.dashboard.topEarner.fullName, 'John');
+  const duplicate = await engine.tryQualify({ email: 'john1@example.com' });
+  assert.equal(duplicate.created, false);
+  assert.equal(duplicate.reason, 'already_exists');
+  const after = await engine.getMentorSummary('LM-JOHN');
+  assert.equal(after.totals.totalEarned, 100);
+  assert.equal(after.commissions.length, 2);
+});
+
+test('Inactive earners stop qualifying and Super Admin can change a personal rate', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    clients: [paidClient('rate.a@example.com'), paidClient('rate.b@example.com')],
+    vault: [
+      assignedLicense('rate.a@example.com', 'LM-111111', 'LUMO-RATE-KEY1-AAAA'),
+      assignedLicense('rate.b@example.com', 'LM-111111', 'LUMO-RATE-KEY2-AAAA'),
+    ],
+  });
+  const first = await engine.tryQualify({ email: 'rate.a@example.com' });
+  assert.equal(first.created, true);
+  assert.equal(first.commission.amount, 50);
+  await engine.setProfileRate('LM-111111', 80, { actorId: 'LM-004821' });
+  await engine.setProfileStatus('LM-111111', 'inactive', { actorId: 'LM-004821' });
+  const blocked = await engine.tryQualify({ email: 'rate.b@example.com' });
+  assert.equal(blocked.created, false);
+  await engine.setProfileStatus('LM-111111', 'active', { actorId: 'LM-004821' });
+  const second = await engine.tryQualify({ email: 'rate.b@example.com' });
+  assert.equal(second.created, true);
+  assert.equal(second.commission.amount, 80);
+  const paid = await engine.markCommissionPaid(second.commission.eventId, { actorId: 'LM-004821' });
+  assert.equal(paid.commission.status, 'paid');
+  const summary = await engine.getMentorSummary('LM-111111');
+  assert.equal(summary.totals.paidOut, 80);
+});
+
+test('Regular admin cannot read another earner via mentorGuard', () => {
+  const denied = mentorGuard({ ok: true, adminId: 'LM-111111', role: 'admin' }, 'LM-222222');
+  assert.equal(denied.ok, false);
 });
