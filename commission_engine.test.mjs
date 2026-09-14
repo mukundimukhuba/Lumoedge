@@ -584,6 +584,37 @@ test('Existing earners stay enrolled and cannot pending-lock themselves via Join
   assert.equal(still.enrollment.canEarn, true);
 });
 
+test('Join uses the applicant mentor name automatically, not Super Admin names', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    auth: {
+      admins: [
+        {
+          id: 'LM-585290',
+          email: 'mentor.m@example.com',
+          fullName: 'M',
+          mentorName: 'M Signals',
+          phone: '0825550000',
+          role: 'admin',
+        },
+      ],
+    },
+  });
+  const joined = await engine.joinProgram(
+    { adminId: 'LM-585290', role: 'admin', email: 'mentor.m@example.com' },
+    {
+      adminId: 'LM-585290',
+      acceptTerms: true,
+    },
+  );
+  assert.equal(joined.ok, true);
+  assert.equal(joined.profile.mentorName, 'M Signals');
+  assert.equal(joined.profile.fullName, 'M Signals');
+  assert.notEqual(joined.profile.fullName, 'Mukundi');
+  assert.equal(joined.profile.email, 'mentor.m@example.com');
+});
+
 test('Join body cannot self-activate or set a personal rate', async () => {
   const io = createMemoryIo();
   const engine = createCommissionEngine(io);

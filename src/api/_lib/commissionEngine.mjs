@@ -247,7 +247,10 @@ export function publicProfile(profile) {
     mentorId: String(profile.mentorId || '').trim(),
     firstName: String(profile.firstName || '').trim(),
     lastName: String(profile.lastName || '').trim(),
-    fullName: [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim(),
+    mentorName: String(profile.mentorName || [profile.firstName, profile.lastName].filter(Boolean).join(' ')).trim(),
+    fullName: String(
+      profile.mentorName || [profile.firstName, profile.lastName].filter(Boolean).join(' '),
+    ).trim(),
     email: normalizeEmail(profile.email),
     phone: String(profile.phone || '').trim(),
     source: String(profile.source || '').trim(),
@@ -713,8 +716,9 @@ export function createCommissionEngine(io = firebaseIo) {
         approvedAt: profile?.approvedAt || null,
         profile: publicProfile(profile),
         fullName: names.fullName || mentorId,
+        mentorName: String(admin?.mentorName || names.fullName || '').trim(),
         email: normalizeEmail(profile?.email || admin.email),
-        phone: String(profile?.phone || '').trim(),
+        phone: String(profile?.phone || admin?.phone || '').trim(),
       },
     };
   }
@@ -1137,17 +1141,20 @@ export function createCommissionEngine(io = firebaseIo) {
 
     const admins = await loadAdmins();
     const admin = findAdmin(admins, mentorId);
-    const names = splitAdminName(admin, {
-      firstName: input.firstName,
-      lastName: input.lastName,
-    });
-    const firstName = names.firstName;
-    const lastName = names.lastName;
+    const mentorName = String(
+      input.mentorName ||
+        [input.firstName, input.lastName].filter(Boolean).join(' ') ||
+        admin?.mentorName ||
+        admin?.fullName ||
+        '',
+    ).trim();
     const email = normalizeEmail(input.email) || normalizeEmail(admin?.email) || normalizeEmail(sessionAdmin.email);
-    const phone = String(input.phone || input.phoneNumber || '').trim();
-    if (!firstName || !lastName || !email || !phone) {
-      return { ok: false, error: 'First name, last name, email, and phone number are required.' };
+    const phone = String(input.phone || input.phoneNumber || admin?.phone || '').trim();
+    if (!mentorName || !email || !phone) {
+      return { ok: false, error: 'Mentor name, email, and phone number are required.' };
     }
+    const firstName = mentorName;
+    const lastName = '';
 
     const settings = await ensureSettings();
     const needsApproval = settings.requireApproval !== false && role !== 'super';
@@ -1156,6 +1163,7 @@ export function createCommissionEngine(io = firebaseIo) {
       mentorId,
       firstName,
       lastName,
+      mentorName,
       email,
       phone,
       source: String(input.source || input.referralSource || '').trim(),
