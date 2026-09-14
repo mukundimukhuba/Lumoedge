@@ -1,0 +1,12 @@
+{
+  "rules": {
+    "lumo": {
+      "commissionSettings": { ".read": false, ".write": false },
+      "commissions": { ".read": false, ".write": false },
+      "payouts": { ".read": false, ".write": false },
+      "payoutDetails": { ".read": false, ".write": false },
+      "commissionAudit": { ".read": false, ".write": false },
+      "adminSessions": { ".read": false, ".write": false }
+    }
+  }
+}

@@ -18,6 +18,9 @@ import {
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
+import { handleCommissionRoutes } from './commissionRoutes.mjs';
+import { tryQualifyCommission, tryReverseCommission } from './commissionEngine.mjs';
+import { matchSuperPassword, mintAdminSession, SUPER_LOGIN, corsAllowHeaders } from './adminSession.mjs';
 
 /** Never let a Firebase fallback read/write hang a request — fail fast instead. */
 function withTimeout(promise, ms = 4000) {
@@ -38,7 +41,7 @@ function json(res, status, data) {
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', corsAllowHeaders());
   res.end(JSON.stringify(data));
 }
 
@@ -136,6 +139,13 @@ export async function handleApi(req, res, pathname) {
     });
     if (licenseHandled) return true;
 
+    const commissionHandled = await handleCommissionRoutes(req, res, {
+      json,
+      readBody,
+      pathname,
+    });
+    if (commissionHandled) return true;
+
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
       json(res, 200, publicDbSnapshot({
@@ -197,6 +207,9 @@ export async function handleApi(req, res, pathname) {
       db.clients = mergeClients(db.clients || [], [created]);
       mirrorClientToSuper(db, created);
       await saveDb(db, sha);
+      if (created.status === 'approved' || created.paymentClaimed) {
+        await tryQualifyCommission({ email: created.email, source: 'payment', actorId: 'system:client-create' });
+      }
       json(res, 201, created);
       return true;
     }
@@ -213,6 +226,19 @@ export async function handleApi(req, res, pathname) {
       db.clients = mergeClients(db.clients || [], [fbUpdated]);
       mirrorClientToSuper(db, fbUpdated);
       await saveDb(db, sha);
+      if (String(fbUpdated.status || '').toLowerCase() === 'rejected') {
+        await tryReverseCommission({
+          email: fbUpdated.email,
+          reason: 'Subscription cancelled or payment rejected',
+          actorId: 'system:client-patch',
+        });
+      } else {
+        await tryQualifyCommission({
+          email: fbUpdated.email,
+          source: 'payment',
+          actorId: 'system:client-patch',
+        });
+      }
       json(res, 200, fbUpdated);
       return true;
     }
@@ -234,7 +260,10 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'email and password required' });
         return true;
       }
-      const result = await verifyMentorLogin(email, password);
+      let result = await verifyMentorLogin(email, password);
+      if (!result.ok && matchSuperPassword(email, password)) {
+        result = { ok: true, admin: { ...SUPER_LOGIN.user } };
+      }
       if (!result.ok) {
         const status = result.error === 'pending' ? 403 : 401;
         json(res, status, {
@@ -244,7 +273,12 @@ export async function handleApi(req, res, pathname) {
         });
         return true;
       }
-      json(res, 200, { ok: true, admin: result.admin });
+      const minted = await mintAdminSession(result.admin);
+      json(res, 200, {
+        ok: true,
+        admin: result.admin,
+        sessionToken: minted?.token || null,
+      });
       return true;
     }
 

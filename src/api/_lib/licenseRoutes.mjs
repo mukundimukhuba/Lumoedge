@@ -216,6 +216,17 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       assigned,
     );
 
+    try {
+      const { tryQualifyCommission } = await import('./commissionEngine.mjs');
+      await tryQualifyCommission({
+        email,
+        source: 'claim',
+        actorId: 'system:license-claim',
+      });
+    } catch (err) {
+      console.warn('[commission] claim hook failed', err);
+    }
+
     json(res, 200, { ok: true, license: toClaimPayload(assigned) });
     return true;
   }
