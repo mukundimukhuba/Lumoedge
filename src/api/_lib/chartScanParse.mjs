@@ -35,11 +35,14 @@ export const CHART_SCAN_PROMPT =
   '- entry_price: last/current visible price where the chart ends.\n' +
   '- stop_loss for BUY: MUST be BELOW entry_price (below recent swing low / support).\n' +
   '- stop_loss for SELL: MUST be ABOVE entry_price (above recent swing high / resistance).\n' +
-  '- If you cannot place a valid SL for the chosen direction, lower confidence below 65.\n' +
-  '- Match decimal precision on the scale. If scale unreadable, set entry_price and stop_loss to null.\n' +
-  'Before replying, verify: trend_bias, direction, and stop_loss placement all agree.\n' +
+  '- take_profit for BUY: MUST be ABOVE entry_price at a structure high / resistance (RR ≥ 1:2 vs SL distance).\n' +
+  '- take_profit for SELL: MUST be BELOW entry_price at a structure low / support (RR ≥ 1:2 vs SL distance).\n' +
+  '- Always return entry_price, stop_loss, AND take_profit as numbers when the scale is readable.\n' +
+  '- If you cannot place a valid SL/TP for the chosen direction, lower confidence below 65.\n' +
+  '- Match decimal precision on the scale. If scale unreadable, set entry_price, stop_loss, and take_profit to null.\n' +
+  'Before replying, verify: trend_bias, direction, stop_loss, and take_profit placement all agree.\n' +
   'Reply ONLY compact JSON:\n' +
-  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","trend_bias":"bullish|bearish|ranging","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"direction_reason":"brief structure reason","summary":"one concise sentence citing structure + pattern"}';
+  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","trend_bias":"bullish|bearish|ranging","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2357.2,"direction_reason":"brief structure reason","summary":"one concise sentence citing structure + pattern"}';
 
 export function imageSeed(image) {
   let seed = 0;
@@ -99,8 +102,8 @@ export function resolveScanDirection(parsed, accuracy, image = '') {
   let correctionReason = '';
   const trendBias = normalizeTrendBias(parsed);
 
-  const entryPrice = Number(parsed.entry_price);
-  const stopLoss = Number(parsed.stop_loss);
+  const entryPrice = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
+  const stopLoss = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
   const implied = priceImpliedDirection(entryPrice, stopLoss);
 
   // SL placement is the strongest objective signal — model often gets direction wrong but SL right
@@ -171,4 +174,160 @@ export function normalizeScanAccuracy(parsed, image = '') {
     accuracy += jitter;
   }
   return Math.max(55, Math.min(89, Math.round(accuracy)));
+}
+
+export function parsePriceField(parsed, ...keys) {
+  if (!parsed || typeof parsed !== 'object') return 0;
+  for (const key of keys) {
+    if (parsed[key] == null || parsed[key] === '') continue;
+    const n = Number(String(parsed[key]).replace(/,/g, '').trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+export function priceDecimals(entryPrice, stopLoss) {
+  const samples = [entryPrice, stopLoss].filter((n) => Number.isFinite(n) && n > 0);
+  let max = 0;
+  for (const n of samples) {
+    const frac = String(n).split('.')[1] || '';
+    max = Math.max(max, Math.min(6, frac.length));
+  }
+  if (entryPrice >= 50) return Math.max(2, Math.min(max || 2, 3));
+  if (entryPrice >= 10) return Math.max(3, Math.min(max || 3, 4));
+  return Math.max(max || 5, 5);
+}
+
+export function roundScanPrice(value, decimals) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Number(value.toFixed(decimals));
+}
+
+export function deriveTakeProfit(direction, entryPrice, stopLoss, ratio = 2) {
+  const risk = Math.abs(entryPrice - stopLoss);
+  if (!Number.isFinite(risk) || risk <= 0) return 0;
+  const tp = direction === 'sell' ? entryPrice - risk * ratio : entryPrice + risk * ratio;
+  return tp > 0 ? tp : 0;
+}
+
+export function validateTakeProfit(direction, entryPrice, takeProfit) {
+  if (!Number.isFinite(takeProfit) || takeProfit <= 0 || takeProfit === entryPrice) return 0;
+  if (direction === 'buy' && takeProfit > entryPrice) return takeProfit;
+  if (direction === 'sell' && takeProfit < entryPrice) return takeProfit;
+  return 0;
+}
+
+export function resolveScanPrices(parsed, direction) {
+  const entryPrice = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
+  const stopLoss = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
+  const validated = validateScanPrices(direction, entryPrice, stopLoss);
+  if (!validated.pricesValid) {
+    return { entryPrice: 0, stopLoss: 0, takeProfit: 0, pricesValid: false };
+  }
+  const decimals = priceDecimals(validated.entryPrice, validated.stopLoss);
+  const tpRaw = parsePriceField(parsed, 'take_profit', 'takeProfit', 'tp');
+  let takeProfit = validateTakeProfit(direction, validated.entryPrice, tpRaw);
+  if (!takeProfit) {
+    takeProfit = deriveTakeProfit(direction, validated.entryPrice, validated.stopLoss, 2);
+  }
+  takeProfit = validateTakeProfit(direction, validated.entryPrice, takeProfit);
+  return {
+    entryPrice: roundScanPrice(validated.entryPrice, decimals),
+    stopLoss: roundScanPrice(validated.stopLoss, decimals),
+    takeProfit: roundScanPrice(takeProfit, decimals),
+    pricesValid: true,
+  };
+}
+
+export function demoScanLevels(symbol, direction) {
+  const u = String(symbol || '').toUpperCase();
+  let entry = 1.0854;
+  if (/XAU|GOLD/.test(u)) entry = 2345.6;
+  else if (/XAG|SILVER/.test(u)) entry = 29.45;
+  else if (/BTC/.test(u)) entry = 64250;
+  else if (/NAS|US100|NDX/.test(u)) entry = 19850.5;
+  else if (/US30|DJ/.test(u)) entry = 39200;
+  else if (/GBP/.test(u)) entry = 1.26842;
+  else if (/USDJPY|JPY/.test(u)) entry = 149.85;
+  const risk = Math.max(entry * 0.0024, entry >= 50 ? 0.4 : 0.00024);
+  const stopLoss = direction === 'sell' ? entry + risk : entry - risk;
+  const takeProfit = deriveTakeProfit(direction, entry, stopLoss, 2);
+  const decimals = priceDecimals(entry, stopLoss);
+  return {
+    entryPrice: roundScanPrice(entry, decimals),
+    stopLoss: roundScanPrice(stopLoss, decimals),
+    takeProfit: roundScanPrice(takeProfit, decimals),
+  };
+}
+
+export function parseChartScanModelText(raw) {
+  let parsed = {};
+  try {
+    const outer = JSON.parse(raw);
+    const content =
+      outer?.choices?.[0]?.message?.content ||
+      outer?.output_text ||
+      outer?.content ||
+      '';
+    const match = String(content).match(/\{[\s\S]*\}/) || String(raw).match(/\{[\s\S]*\}/);
+    parsed = match ? JSON.parse(match[0]) : outer && typeof outer === 'object' ? outer : {};
+  } catch {
+    parsed = {};
+  }
+  return parsed && typeof parsed === 'object' ? parsed : {};
+}
+
+function omitZero(value) {
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
+  const symbolVisible = parsed.symbol_visible !== false;
+  let symbol = parsed.symbol == null ? '' : String(parsed.symbol).trim();
+  if (!symbolVisible || !symbol || /null|unknown|n\/a|none|guess/i.test(symbol)) {
+    return {
+      ok: false,
+      status: 422,
+      payload: {
+        ok: false,
+        accuracy: 0,
+        error:
+          'Could not read the symbol from this chart. Upload a clearer MT5 screenshot showing the pair name.',
+      },
+    };
+  }
+  symbol = symbol.replace(/\s+/g, '').toUpperCase();
+
+  let accuracy = normalizeScanAccuracy(parsed, image);
+  const resolved = resolveScanDirection(parsed, accuracy, image);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      status: 422,
+      payload: { ok: false, accuracy: 0, error: resolved.error },
+    };
+  }
+
+  const prices = resolveScanPrices(parsed, resolved.direction);
+  const timeframeRaw = parsed.timeframe == null ? '' : String(parsed.timeframe).trim();
+  const timeframe =
+    !timeframeRaw || /null|unknown|n\/a|none/i.test(timeframeRaw) ? undefined : timeframeRaw;
+
+  return {
+    ok: true,
+    status: 200,
+    payload: {
+      ok: true,
+      demo,
+      accuracy: resolved.accuracy,
+      symbol,
+      timeframe,
+      direction: resolved.direction,
+      summary: parsed.summary || `Scan for ${symbol}`,
+      entryPrice: omitZero(prices.entryPrice),
+      stopLoss: omitZero(prices.stopLoss),
+      takeProfit: omitZero(prices.takeProfit),
+      pricesValid: prices.pricesValid,
+    },
+  };
 }

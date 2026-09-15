@@ -725,11 +725,19 @@ export default async function handler(req, res) {
       const CHART_SCAN_MODEL =
         chartScanSecret?.model || process.env.CHART_SCAN_MODEL || 'gpt-4o';
 
+      const {
+        CHART_SCAN_PROMPT,
+        parseChartScanModelText,
+        buildScanResponse,
+        demoScanLevels,
+      } = await import('./_lib/chartScanParse.mjs');
+
       if (!CHART_SCAN_API_KEY) {
         const accuracy = 70 + Math.floor(Math.random() * 21);
         const demoSymbols = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NAS100', 'BTCUSD'];
         const symbol = demoSymbols[Math.floor(Math.random() * demoSymbols.length)];
         const direction = Math.random() > 0.5 ? 'buy' : 'sell';
+        const levels = demoScanLevels(symbol, direction);
         send(res, 200, {
           ok: true,
           demo: true,
@@ -738,22 +746,13 @@ export default async function handler(req, res) {
           timeframe: 'M15',
           direction,
           summary: 'Demo mode — add CHART_SCAN_API_KEY on Vercel for live AI scans.',
+          ...levels,
+          pricesValid: true,
         });
         return;
       }
 
-      const prompt =
-        'You analyze MT5 / trading chart screenshots.\n' +
-        'CRITICAL RULES FOR SYMBOL:\n' +
-        '- Read the EXACT trading symbol text shown on the chart UI (title bar, market watch, or chart header).\n' +
-        '- Do NOT guess, invent, or substitute a different pair (never default to XAUUSD/EURUSD unless that text is clearly visible).\n' +
-        '- If the symbol text is not clearly readable on the image, set symbol to null and symbol_visible to false.\n' +
-        '- Copy the symbol characters as shown (e.g. XAUUSD, EURUSD.r, NAS100, BTCUSD).\n' +
-        'Also read timeframe only if visible (M1,M5,M15,H1,H4,D1, etc), else null.\n' +
-        'Decide direction buy or sell from the chart structure only.\n' +
-        'accuracy_percent must be an integer from 70 to 90.\n' +
-        'Reply ONLY compact JSON:\n' +
-        '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","direction":"buy|sell","accuracy_percent":78,"summary":"one short sentence"}';
+      const prompt = CHART_SCAN_PROMPT;
 
       const upstream = await fetch(CHART_SCAN_API_URL, {
         method: 'POST',
@@ -786,68 +785,9 @@ export default async function handler(req, res) {
         return;
       }
 
-      let parsed = {};
-      try {
-        const outer = JSON.parse(raw);
-        const content =
-          outer?.choices?.[0]?.message?.content ||
-          outer?.output_text ||
-          outer?.content ||
-          '';
-        const match =
-          String(content).match(/\{[\s\S]*\}/) ||
-          String(raw).match(/\{[\s\S]*\}/);
-        parsed = match ? JSON.parse(match[0]) : {};
-      } catch {
-        parsed = {};
-      }
-
-      const symbolVisible = parsed.symbol_visible !== false;
-      let symbol = parsed.symbol == null ? '' : String(parsed.symbol).trim();
-      if (
-        !symbolVisible ||
-        !symbol ||
-        /null|unknown|n\/a|none|guess/i.test(symbol)
-      ) {
-        send(res, 422, {
-          ok: false,
-          accuracy: 0,
-          error:
-            'Could not read the symbol from this chart. Upload a clearer MT5 screenshot showing the pair name.',
-        });
-        return;
-      }
-      symbol = symbol.replace(/\s+/g, '').toUpperCase();
-
-      let accuracy = Number(parsed.accuracy_percent ?? parsed.accuracy ?? 0);
-      if (!Number.isFinite(accuracy) || accuracy < 70 || accuracy > 90) {
-        accuracy = 70 + Math.floor(Math.random() * 21);
-      }
-      const rawDir = String(parsed.direction || parsed.side || '').toLowerCase();
-      if (!rawDir.includes('sell') && !rawDir.includes('buy')) {
-        send(res, 422, {
-          ok: false,
-          accuracy: 0,
-          error: 'Could not determine BUY/SELL from this chart. Try another screenshot.',
-        });
-        return;
-      }
-      const direction = rawDir.includes('sell') ? 'sell' : 'buy';
-      const timeframeRaw = parsed.timeframe == null ? '' : String(parsed.timeframe).trim();
-      const timeframe =
-        !timeframeRaw || /null|unknown|n\/a|none/i.test(timeframeRaw)
-          ? undefined
-          : timeframeRaw;
-
-      send(res, 200, {
-        ok: true,
-        demo: false,
-        accuracy: Math.round(accuracy),
-        symbol,
-        timeframe,
-        direction,
-        summary: parsed.summary || `Scan for ${symbol}`,
-      });
+      const parsed = parseChartScanModelText(raw);
+      const result = buildScanResponse(parsed, image, { demo: false });
+      send(res, result.status, result.payload);
       return;
     }
 
