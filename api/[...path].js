@@ -789,6 +789,31 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Direct broker connect must run before the generic /api/mt5 proxy.
+    if (pathname === '/api/mt5/connect') {
+      if (req.method === 'OPTIONS') {
+        send(res, 204, {});
+        return;
+      }
+      if (req.method !== 'POST') {
+        send(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const { connectMt5Broker } = await import('./_lib/mt5Bridge.mjs');
+      const body = await readBody(req);
+      const result = await connectMt5Broker({
+        user: body.user,
+        password: body.password,
+        server: body.server,
+      });
+      if (result.ok && result.token) {
+        send(res, 200, { token: result.token });
+      } else {
+        send(res, 502, { error: result.error || 'Connect failed' });
+      }
+      return;
+    }
+
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
       const MT5_API_BASE = (

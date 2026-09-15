@@ -153,6 +153,26 @@ export async function handleApi(req, res, pathname) {
     });
     if (commissionHandled) return true;
 
+    if (pathname === '/api/mt5/connect') {
+      if (req.method !== 'POST') {
+        json(res, 405, { error: 'Method not allowed' });
+        return true;
+      }
+      const { connectMt5Broker } = await import('./mt5Bridge.mjs');
+      const body = await readBody(req);
+      const result = await connectMt5Broker({
+        user: body.user,
+        password: body.password,
+        server: body.server,
+      });
+      if (result.ok && result.token) {
+        json(res, 200, { token: result.token });
+      } else {
+        json(res, 502, { error: result.error || 'Connect failed' });
+      }
+      return true;
+    }
+
     if (pathname === '/api/admin/workspace' && req.method === 'GET') {
       const url = new URL(req.url || '', 'https://lumoedge.com');
       const requested = String(
