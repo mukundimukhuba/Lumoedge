@@ -1334,6 +1334,39 @@ export function createCommissionEngine(io = firebaseIo) {
     return { ok: true, commission: next };
   }
 
+  async function updateCommissionAmount(eventId, amount, { actorId, reason } = {}) {
+    const id = String(eventId || '').trim();
+    if (!id) return { ok: false, error: 'eventId required' };
+    const value = Number(amount);
+    if (!Number.isFinite(value)) return { ok: false, error: 'Commission amount must be a number' };
+    const why = String(reason || '').trim();
+    if (!why) return { ok: false, error: 'A reason is required to edit a commission' };
+    const all = await loadCommissions();
+    const row = all[id];
+    if (!row) return { ok: false, error: 'Commission not found' };
+    const status = String(row.status || '');
+    if (status === 'reversed' || status === 'rejected') {
+      return { ok: false, error: 'Cannot edit a reversed or rejected commission' };
+    }
+    const previousAmount = money(row.amount);
+    const next = {
+      ...row,
+      amount: money(value),
+      editedAt: nowIso(),
+      editedBy: actorId || 'super',
+      editReason: why,
+    };
+    await saveCommission(next);
+    await writeAudit({
+      action: 'commission_amount_updated',
+      actorId: actorId || 'super',
+      commissionId: id,
+      reason: why,
+      meta: { mentorId: row.mentorId, previousAmount, amount: next.amount },
+    });
+    return { ok: true, commission: next };
+  }
+
   async function getAudit(limit = 200) {
     return toList(await loadAudit())
       .sort((a, b) => parseIsoMs(b.timestamp) - parseIsoMs(a.timestamp))
@@ -1362,6 +1395,7 @@ export function createCommissionEngine(io = firebaseIo) {
     setProfileStatus,
     setProfileRate,
     markCommissionPaid,
+    updateCommissionAmount,
     getAudit,
     getPayoutForAdmin,
     writeAudit,

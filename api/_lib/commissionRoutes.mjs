@@ -215,6 +215,22 @@ export async function handleCommissionRoutes(req, res, ctx) {
     return true;
   }
 
+  const editCommission = path.match(/^\/api\/commissions\/admin\/commissions\/([^/]+)$/);
+  if (editCommission && req.method === 'PUT') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const eventId = decodeURIComponent(editCommission[1]);
+    const body = await readBody(req);
+    const result = await engine.updateCommissionAmount(eventId, body?.amount, {
+      actorId: session.adminId,
+      reason: body?.reason,
+    });
+    json(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
   if (path === '/api/commissions/admin/audit' && req.method === 'GET') {
     if (!requireSuper(session)) {
       json(res, 403, { ok: false, error: 'Access denied' });

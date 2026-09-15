@@ -123,7 +123,7 @@ function HowItWorks({ amount, currency }) {
   });
 }
 
-function HistoryTable({ rows, currency, empty }) {
+function HistoryTable({ rows, currency, empty, canEdit, busy, onEditAmount }) {
   if (!rows?.length) {
     return Y.jsx("p", { className: "commission-empty", children: empty });
   }
@@ -140,6 +140,7 @@ function HistoryTable({ rows, currency, empty }) {
               Y.jsx("th", { children: "Subscription amount" }),
               Y.jsx("th", { children: "Commission earned" }),
               Y.jsx("th", { children: "Status" }),
+              canEdit ? Y.jsx("th", { children: "Edit" }) : null,
             ],
           }),
         }),
@@ -158,6 +159,20 @@ function HistoryTable({ rows, currency, empty }) {
                   }),
                   Y.jsx("td", { children: money(row.amount, row.currency || currency) }),
                   Y.jsx("td", { children: Y.jsx(Badge, { status: row.status }) }),
+                  canEdit
+                    ? Y.jsx("td", {
+                        children:
+                          row.status === "reversed" || row.status === "rejected"
+                            ? Y.jsx("span", { className: "muted", children: "Locked" })
+                            : Y.jsx("button", {
+                                type: "button",
+                                className: "btn btn-ghost",
+                                disabled: Boolean(busy),
+                                onClick: () => onEditAmount?.(row),
+                                children: "Edit amount",
+                              }),
+                      })
+                    : null,
                 ],
               },
               row.eventId,
@@ -525,10 +540,8 @@ function RestrictedManageAll() {
 }
 
 function RankCard({ row, currency, selected, onOpen }) {
-  return Y.jsxs("button", {
-    type: "button",
+  return Y.jsxs("article", {
     className: `commission-rank-card${selected ? " is-open" : ""}`,
-    onClick: () => onOpen(row),
     children: [
       Y.jsxs("div", { className: "commission-rank-num", children: ["#", row.rank] }),
       Y.jsxs("div", {
@@ -548,6 +561,9 @@ function RankCard({ row, currency, selected, onOpen }) {
               Y.jsxs("span", {
                 children: ["Pending: ", Y.jsx("b", { children: money(row.totals?.pending, currency) })],
               }),
+              Y.jsxs("span", {
+                children: ["Rate: ", Y.jsx("b", { children: money(row.rate, currency) })],
+              }),
             ],
           }),
           Y.jsxs("div", {
@@ -557,6 +573,12 @@ function RankCard({ row, currency, selected, onOpen }) {
               Y.jsx(Badge, { status: row.status }),
               Y.jsx(Badge, { status: row.accountType }),
               Y.jsx("span", { className: "muted", children: row.mentorId }),
+              Y.jsx("button", {
+                type: "button",
+                className: selected ? "btn btn-blue" : "btn btn-ghost",
+                onClick: () => onOpen(row),
+                children: selected ? "Editing" : "Edit commission",
+              }),
             ],
           }),
         ],
@@ -612,11 +634,29 @@ function SuperView({ admin, onNotice }) {
       const next = await api(`/api/commissions/admin/mentors/${encodeURIComponent(row.mentorId)}`);
       setProfile(next.profile);
       setRateForm(String(next.profile?.rate ?? ""));
+      setAdjust((prev) => ({ ...prev, mentorId: next.profile?.mentorId || row.mentorId }));
     } catch (err) {
       onNotice(err instanceof Error ? err.message : "Could not load profile.");
     } finally {
       setBusy("");
     }
+  };
+
+  const editCommissionAmount = (row) => {
+    const nextAmount = window.prompt(
+      `New commission amount for ${row.clientName || row.eventId}`,
+      String(row.amount ?? ""),
+    );
+    if (nextAmount == null || String(nextAmount).trim() === "") return;
+    const reason = window.prompt("Reason for editing this person's commission?");
+    if (!reason) return;
+    return act("editAmount", async () => {
+      await api(`/api/commissions/admin/commissions/${encodeURIComponent(row.eventId)}`, {
+        method: "PUT",
+        body: JSON.stringify({ amount: Number(nextAmount), reason }),
+      });
+      onNotice("Commission amount updated.");
+    });
   };
 
   if (!overview || !settingsForm) {
@@ -830,7 +870,7 @@ function SuperView({ admin, onNotice }) {
         className: "glow-card",
         children: [
           Y.jsx("h3", { style: { marginTop: 0 }, children: "Ranked earners" }),
-          Y.jsx("p", { className: "muted", style: { marginTop: 0 }, children: "Default sort: highest total earnings → lowest. Click a person for their commission profile." }),
+          Y.jsx("p", { className: "muted", style: { marginTop: 0 }, children: "Highest total earnings first. Super Admin can edit each person’s commission rate and the amounts they already have." }),
           !earners.length
             ? Y.jsx("p", { className: "commission-empty", children: "No enrolled commission earners match this filter." })
             : Y.jsx("div", {
@@ -858,7 +898,7 @@ function SuperView({ admin, onNotice }) {
                 className: "commission-actions",
                 style: { justifyContent: "space-between" },
                 children: [
-                  Y.jsx("h3", { style: { margin: 0 }, children: "Commission profile" }),
+                  Y.jsx("h3", { style: { margin: 0 }, children: "Edit this person's commission" }),
                   Y.jsx("button", {
                     type: "button",
                     className: "btn btn-ghost",
@@ -921,38 +961,95 @@ function SuperView({ admin, onNotice }) {
                 ],
               }),
               Y.jsxs("div", {
-                className: "commission-filters",
-                style: { marginTop: 12 },
+                className: "commission-edit-panel",
                 children: [
-                  Y.jsx(Field, {
-                    label: "Personal commission rate",
-                    children: Y.jsx("input", {
-                      type: "number",
-                      value: rateForm,
-                      onChange: (ev) => setRateForm(ev.target.value),
-                    }),
+                  Y.jsx("h3", { children: "Commission they have" }),
+                  Y.jsx("p", {
+                    className: "muted",
+                    style: { marginTop: 0 },
+                    children: "Only Super Admin can change this. Saving a rate applies to future referrals. Editing a history amount or adding an adjustment changes what they currently have.",
+                  }),
+                  Y.jsxs("div", {
+                    className: "commission-filters",
+                    children: [
+                      Y.jsx(Field, {
+                        label: "Personal commission rate",
+                        children: Y.jsx("input", {
+                          type: "number",
+                          min: "0",
+                          step: "0.01",
+                          value: rateForm,
+                          onChange: (ev) => setRateForm(ev.target.value),
+                        }),
+                      }),
+                      Y.jsx(Field, {
+                        label: "Credit or debit amount",
+                        children: Y.jsx("input", {
+                          type: "number",
+                          step: "0.01",
+                          value: adjust.amount,
+                          onChange: (ev) => setAdjust({ ...adjust, amount: ev.target.value, mentorId: profile.mentorId }),
+                        }),
+                      }),
+                      Y.jsx(Field, {
+                        label: "Reason for credit/debit",
+                        children: Y.jsx("input", {
+                          value: adjust.reason,
+                          onChange: (ev) => setAdjust({ ...adjust, reason: ev.target.value, mentorId: profile.mentorId }),
+                          placeholder: "Required for adjustments",
+                        }),
+                      }),
+                    ],
+                  }),
+                  Y.jsxs("div", {
+                    className: "commission-actions",
+                    style: { marginTop: 10 },
+                    children: [
+                      Y.jsx("button", {
+                        type: "button",
+                        className: "btn btn-blue",
+                        disabled: busy !== "",
+                        onClick: () =>
+                          void act("rate", async () => {
+                            await api(`/api/commissions/admin/profiles/${encodeURIComponent(profile.mentorId)}/rate`, {
+                              method: "PUT",
+                              body: JSON.stringify({ rate: Number(rateForm) }),
+                            });
+                            onNotice("Personal commission rate saved.");
+                          }),
+                        children: "Save rate",
+                      }),
+                      Y.jsx("button", {
+                        type: "button",
+                        className: "btn btn-ghost",
+                        disabled: busy !== "",
+                        onClick: () =>
+                          void act("adjust", async () => {
+                            await api("/api/commissions/admin/adjust", {
+                              method: "POST",
+                              body: JSON.stringify({
+                                mentorId: profile.mentorId,
+                                amount: adjust.amount,
+                                reason: adjust.reason,
+                              }),
+                            });
+                            onNotice("Commission balance updated.");
+                            setAdjust({ mentorId: profile.mentorId, amount: "50", reason: "" });
+                          }),
+                        children: "Apply credit/debit",
+                      }),
+                    ],
                   }),
                 ],
-              }),
-              Y.jsx("button", {
-                type: "button",
-                className: "btn btn-ghost",
-                style: { marginTop: 8, width: "fit-content" },
-                disabled: busy !== "",
-                onClick: () =>
-                  void act("rate", () =>
-                    api(`/api/commissions/admin/profiles/${encodeURIComponent(profile.mentorId)}/rate`, {
-                      method: "PUT",
-                      body: JSON.stringify({ rate: Number(rateForm) }),
-                    }),
-                  ),
-                children: "Save rate",
               }),
               Y.jsx("h3", { children: "Commission history" }),
               Y.jsx(HistoryTable, {
                 rows: profile.commissionHistory,
                 currency,
                 empty: "No commissions for this earner yet.",
+                canEdit: true,
+                busy,
+                onEditAmount: editCommissionAmount,
               }),
               profile.commissionHistory?.length
                 ? Y.jsx("div", {
@@ -1091,7 +1188,7 @@ function SuperView({ admin, onNotice }) {
           Y.jsx("p", {
             className: "muted",
             style: { marginTop: 0 },
-            children: "A reason is required. The amount is stored on this record and does not rewrite history.",
+            children: "Super Admin only. Prefer Edit commission on a ranked earner so the ID is filled in. A reason is required.",
           }),
           Y.jsxs("div", {
             className: "commission-filters",

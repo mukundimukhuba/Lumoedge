@@ -22,8 +22,9 @@
 .commission-chip{border:1px solid rgba(59,130,246,.35);background:rgba(8,14,28,.72);color:var(--text);border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer}
 .commission-chip.is-on{background:linear-gradient(135deg,#2563eb,#0ea5e9);border-color:transparent;color:#fff}
 .commission-rank-list{display:grid;gap:10px}
-.commission-rank-card{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;cursor:pointer;text-align:left;width:100%;border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:16px;padding:14px;color:inherit;box-shadow:0 0 18px rgba(37,99,235,.12)}
+.commission-rank-card{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;text-align:left;width:100%;border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:16px;padding:14px;color:inherit;box-shadow:0 0 18px rgba(37,99,235,.12)}
 .commission-rank-card:hover,.commission-rank-card.is-open{border-color:rgba(14,165,233,.7);box-shadow:0 0 22px rgba(14,165,233,.22)}
+.commission-edit-panel{margin-top:12px;padding:12px;border:1px solid rgba(14,165,233,.35);background:rgba(8,18,36,.72);border-radius:14px}
 .commission-rank-num{font-family:var(--font-display);font-size:22px;font-weight:800;color:#7dd3fc;min-width:42px}
 .commission-rank-meta{display:grid;gap:4px;font-size:13px}
 .commission-rank-meta strong{font-size:16px}

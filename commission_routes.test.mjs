@@ -48,6 +48,10 @@ function createEngineSpy() {
       calls.push(['markCommissionPaid']);
       return { ok: true };
     },
+    async updateCommissionAmount(id, amount, opts) {
+      calls.push(['updateCommissionAmount', id, amount, opts?.reason]);
+      return { ok: true, commission: { eventId: id, amount } };
+    },
     async getEarnerProfile(id) {
       calls.push(['getEarnerProfile', id]);
       return { ok: true, profile: { mentorId: id, totals: { totalEarned: 100 } } };
@@ -111,6 +115,16 @@ test('Regular admin can load My Earnings but cannot open Manage All data', async
   });
   assert.equal(paid.statusCode, 403);
   assert.equal(engine.calls.some((row) => row[0] === 'markCommissionPaid'), false);
+
+  const editAmount = await callRoute({
+    method: 'PUT',
+    path: '/api/commissions/admin/commissions/fp:abc',
+    session,
+    engine,
+    body: { amount: 9000, reason: 'fix' },
+  });
+  assert.equal(editAmount.statusCode, 403);
+  assert.equal(engine.calls.some((row) => row[0] === 'updateCommissionAmount'), false);
 });
 
 test('Regular admin can join without becoming Super Admin; Super Admin can rank earners', async () => {
@@ -149,6 +163,16 @@ test('Regular admin can join without becoming Super Admin; Super Admin can rank 
   });
   assert.equal(profile.statusCode, 200);
   assert.equal(profile.body.profile.mentorId, 'LM-JOHN');
+
+  const edited = await callRoute({
+    method: 'PUT',
+    path: '/api/commissions/admin/commissions/fp:abc',
+    session: superSession,
+    engine,
+    body: { amount: 75, reason: 'Corrected amount' },
+  });
+  assert.equal(edited.statusCode, 200);
+  assert.equal(engine.calls.some((row) => row[0] === 'updateCommissionAmount' && row[1] === 'fp:abc'), true);
 });
 
 test('Missing session is unauthorized and mentorGuard still blocks ID tampering', async () => {

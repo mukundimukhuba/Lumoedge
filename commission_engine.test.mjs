@@ -548,6 +548,29 @@ test('Inactive earners stop qualifying and Super Admin can change a personal rat
   assert.equal(summary.totals.paidOut, 80);
 });
 
+test('Super Admin can edit a commission amount a person already has', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  await seedBase(io, {
+    clients: [paidClient('edit.me@example.com')],
+    vault: [assignedLicense('edit.me@example.com', 'LM-111111', 'LUMO-EDIT-KEY1-AAAA')],
+  });
+  const created = await engine.tryQualify({ email: 'edit.me@example.com' });
+  assert.equal(created.commission.amount, 50);
+  const missingReason = await engine.updateCommissionAmount(created.commission.eventId, 120, {
+    actorId: 'LM-004821',
+  });
+  assert.equal(missingReason.ok, false);
+  const updated = await engine.updateCommissionAmount(created.commission.eventId, 120, {
+    actorId: 'LM-004821',
+    reason: 'Corrected Super Admin dashboard amount',
+  });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.commission.amount, 120);
+  const summary = await engine.getMentorSummary('LM-111111');
+  assert.equal(summary.totals.totalEarned, 120);
+});
+
 test('Regular admin cannot read another earner via mentorGuard', () => {
   const denied = mentorGuard({ ok: true, adminId: 'LM-111111', role: 'admin' }, 'LM-222222');
   assert.equal(denied.ok, false);
