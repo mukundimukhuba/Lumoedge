@@ -35,14 +35,14 @@ export const CHART_SCAN_PROMPT =
   '- entry_price: last/current visible price where the chart ends.\n' +
   '- stop_loss for BUY: MUST be BELOW entry_price (below recent swing low / support).\n' +
   '- stop_loss for SELL: MUST be ABOVE entry_price (above recent swing high / resistance).\n' +
-  '- take_profit for BUY: MUST be ABOVE entry_price at a structure high / resistance (RR ≥ 1:2 vs SL distance).\n' +
-  '- take_profit for SELL: MUST be BELOW entry_price at a structure low / support (RR ≥ 1:2 vs SL distance).\n' +
-  '- Always return entry_price, stop_loss, AND take_profit as numbers when the scale is readable.\n' +
-  '- If you cannot place a valid SL/TP for the chosen direction, lower confidence below 65.\n' +
-  '- Match decimal precision on the scale. If scale unreadable, set entry_price, stop_loss, and take_profit to null.\n' +
-  'Before replying, verify: trend_bias, direction, stop_loss, and take_profit placement all agree.\n' +
+  '- take_profit / TP1 / TP2 / TP3: BUY above entry, SELL below entry.\n' +
+  '- TP1 = 1:1, TP2 = 1:2, TP3 = 1:3 versus stop-loss distance. Prefer structure-aligned levels at those RRs.\n' +
+  '- Always return entry_price and stop_loss as numbers when the scale is readable.\n' +
+  '- If you cannot place a valid SL for the chosen direction, lower confidence below 65.\n' +
+  '- Match decimal precision on the scale. If scale unreadable, set entry_price and stop_loss to null.\n' +
+  'Before replying, verify: trend_bias, direction, and stop_loss placement all agree.\n' +
   'Reply ONLY compact JSON:\n' +
-  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","trend_bias":"bullish|bearish|ranging","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2357.2,"direction_reason":"brief structure reason","summary":"one concise sentence citing structure + pattern"}';
+  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","trend_bias":"bullish|bearish|ranging","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2351.4,"direction_reason":"brief structure reason","summary":"one concise sentence citing structure + pattern"}';
 
 export function imageSeed(image) {
   let seed = 0;
@@ -203,11 +203,27 @@ export function roundScanPrice(value, decimals) {
   return Number(value.toFixed(decimals));
 }
 
+export const TP_RATIOS = [1, 2, 3];
+
 export function deriveTakeProfit(direction, entryPrice, stopLoss, ratio = 2) {
   const risk = Math.abs(entryPrice - stopLoss);
   if (!Number.isFinite(risk) || risk <= 0) return 0;
   const tp = direction === 'sell' ? entryPrice - risk * ratio : entryPrice + risk * ratio;
   return tp > 0 ? tp : 0;
+}
+
+export function deriveTakeProfitLadder(direction, entryPrice, stopLoss) {
+  const decimals = priceDecimals(entryPrice, stopLoss);
+  const takeProfits = TP_RATIOS.map((ratio) =>
+    roundScanPrice(deriveTakeProfit(direction, entryPrice, stopLoss, ratio), decimals),
+  ).filter((n) => n > 0);
+  return {
+    takeProfits,
+    takeProfit1: takeProfits[0] || 0,
+    takeProfit2: takeProfits[1] || 0,
+    takeProfit3: takeProfits[2] || 0,
+    takeProfit: takeProfits[0] || 0,
+  };
 }
 
 export function validateTakeProfit(direction, entryPrice, takeProfit) {
@@ -222,19 +238,23 @@ export function resolveScanPrices(parsed, direction) {
   const stopLoss = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
   const validated = validateScanPrices(direction, entryPrice, stopLoss);
   if (!validated.pricesValid) {
-    return { entryPrice: 0, stopLoss: 0, takeProfit: 0, pricesValid: false };
+    return {
+      entryPrice: 0,
+      stopLoss: 0,
+      takeProfit: 0,
+      takeProfit1: 0,
+      takeProfit2: 0,
+      takeProfit3: 0,
+      takeProfits: [],
+      pricesValid: false,
+    };
   }
   const decimals = priceDecimals(validated.entryPrice, validated.stopLoss);
-  const tpRaw = parsePriceField(parsed, 'take_profit', 'takeProfit', 'tp');
-  let takeProfit = validateTakeProfit(direction, validated.entryPrice, tpRaw);
-  if (!takeProfit) {
-    takeProfit = deriveTakeProfit(direction, validated.entryPrice, validated.stopLoss, 2);
-  }
-  takeProfit = validateTakeProfit(direction, validated.entryPrice, takeProfit);
+  const ladder = deriveTakeProfitLadder(direction, validated.entryPrice, validated.stopLoss);
   return {
     entryPrice: roundScanPrice(validated.entryPrice, decimals),
     stopLoss: roundScanPrice(validated.stopLoss, decimals),
-    takeProfit: roundScanPrice(takeProfit, decimals),
+    ...ladder,
     pricesValid: true,
   };
 }
@@ -251,12 +271,11 @@ export function demoScanLevels(symbol, direction) {
   else if (/USDJPY|JPY/.test(u)) entry = 149.85;
   const risk = Math.max(entry * 0.0024, entry >= 50 ? 0.4 : 0.00024);
   const stopLoss = direction === 'sell' ? entry + risk : entry - risk;
-  const takeProfit = deriveTakeProfit(direction, entry, stopLoss, 2);
   const decimals = priceDecimals(entry, stopLoss);
   return {
     entryPrice: roundScanPrice(entry, decimals),
     stopLoss: roundScanPrice(stopLoss, decimals),
-    takeProfit: roundScanPrice(takeProfit, decimals),
+    ...deriveTakeProfitLadder(direction, entry, stopLoss),
   };
 }
 
@@ -327,6 +346,10 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
       entryPrice: omitZero(prices.entryPrice),
       stopLoss: omitZero(prices.stopLoss),
       takeProfit: omitZero(prices.takeProfit),
+      takeProfit1: omitZero(prices.takeProfit1),
+      takeProfit2: omitZero(prices.takeProfit2),
+      takeProfit3: omitZero(prices.takeProfit3),
+      takeProfits: (prices.takeProfits || []).filter((n) => n > 0),
       pricesValid: prices.pricesValid,
     },
   };
