@@ -327,7 +327,14 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'email and password required' });
         return true;
       }
-      let result = await verifyMentorLogin(email, password);
+      let backupAdmins = [];
+      try {
+        const { db } = await loadDb();
+        backupAdmins = toArray(db.auth?.admins);
+      } catch {
+        backupAdmins = [];
+      }
+      let result = await verifyMentorLogin(email, password, backupAdmins);
       if (!result.ok && matchSuperPassword(email, password)) {
         result = { ok: true, admin: { ...SUPER_LOGIN.user } };
       }

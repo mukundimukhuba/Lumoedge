@@ -292,11 +292,49 @@ export function publicDbSnapshot(db) {
   return next;
 }
 
+export function findAdminByEmail(admins, email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  return (
+    toArray(admins).find(
+      (row) =>
+        String(row?.email || '')
+          .trim()
+          .toLowerCase() === normalized,
+    ) || null
+  );
+}
+
+export function passwordsMatch(stored, incoming) {
+  return String(stored || '') === String(incoming || '');
+}
+
+export function loginResultFor(hit, email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  const role = normalizeAdminRole(hit?.role);
+  const admin = publicAdminRecord({ ...hit, email: normalized, role });
+  if (role === 'pending' || (role !== 'admin' && role !== 'super')) {
+    return { ok: false, error: 'pending', admin };
+  }
+  return { ok: true, admin };
+}
+
 /**
- * Verify mentor email+password against Firebase/local roster.
- * Returns a public admin record — never the password.
+ * Verify mentor email+password against Firebase, then a durable backup roster.
+ * If Firebase is missing the password (client roster sync wiped it), restore
+ * the backup password and let the mentor in. Never overwrite a non-empty
+ * Firebase password from backup — Super Admin reset must keep winning.
  */
-export async function verifyMentorLogin(email, password) {
+export async function verifyMentorLogin(
+  email,
+  password,
+  backupAdmins = [],
+  io = { read: firebaseRead, write: firebaseWrite },
+) {
   const normalized = String(email || '')
     .trim()
     .toLowerCase();
@@ -304,26 +342,39 @@ export async function verifyMentorLogin(email, password) {
   if (!normalized || !pass) {
     return { ok: false, error: 'invalid_credentials' };
   }
-  const curAuth = (await firebaseRead('lumo/auth')) || { admins: [] };
+  const curAuth = (await io.read('lumo/auth')) || { admins: [] };
   const fbAdmins = toArray(curAuth.admins);
-  const hit = fbAdmins.find(
-    (a) => String(a?.email || '').trim().toLowerCase() === normalized,
-  );
-  if (!hit) {
-    return { ok: false, error: 'invalid_credentials' };
+  const hit = findAdminByEmail(fbAdmins, normalized);
+  if (hit && passwordsMatch(hit.password, pass)) {
+    return loginResultFor(hit, normalized);
   }
-  if (String(hit.password || '') !== pass) {
-    return { ok: false, error: 'invalid_credentials' };
+
+  const backupHit = findAdminByEmail(backupAdmins, normalized);
+  const livePass = String(hit?.password || '');
+  if (!livePass && backupHit && passwordsMatch(backupHit.password, pass)) {
+    const healed = {
+      ...hit,
+      ...backupHit,
+      email: normalized,
+      password: backupHit.password,
+      id: hit?.id || backupHit.id,
+      role: pickAdminRole(hit?.role, backupHit.role),
+    };
+    const next = mergeAdminsLive(fbAdmins, [healed]);
+    await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
+    return loginResultFor(healed, normalized);
   }
-  const role = normalizeAdminRole(hit.role);
-  const admin = publicAdminRecord({ ...hit, email: normalized, role });
-  if (role === 'pending') {
-    return { ok: false, error: 'pending', admin };
+
+  if (!hit && backupHit && passwordsMatch(backupHit.password, pass)) {
+    const next = mergeAdminsLive(fbAdmins, [{ ...backupHit, email: normalized }]);
+    await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
+    return loginResultFor(backupHit, normalized);
   }
-  if (role !== 'admin' && role !== 'super') {
-    return { ok: false, error: 'pending', admin };
+
+  if (hit && !livePass) {
+    return { ok: false, error: 'password_reset_required' };
   }
-  return { ok: true, admin };
+  return { ok: false, error: 'invalid_credentials' };
 }
 
 export function pickAdminRole(a, b) {
