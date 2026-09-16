@@ -1,0 +1,42 @@
+.calendar-page{display:grid;gap:14px;padding:4px 0 28px}
+.calendar-kicker{margin:0;font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--electric,#38bdf8)}
+.calendar-title{margin:4px 0 0;font-family:var(--font-display,Orbitron,sans-serif);font-size:22px;letter-spacing:.04em}
+.calendar-lead{margin:8px 0 0;color:var(--muted,rgba(232,238,252,.55));font-size:13px;line-height:1.55}
+.calendar-card{border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:18px;padding:16px;box-shadow:0 0 18px rgba(37,99,235,.12);display:grid;gap:10px}
+.calendar-card.is-active{border-color:rgba(57,255,20,.45);box-shadow:0 0 22px rgba(57,255,20,.16)}
+.calendar-card.is-expired{opacity:.72}
+.calendar-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center}
+.calendar-meta{display:flex;flex-wrap:wrap;gap:8px}
+.calendar-chip{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;border:1px solid rgba(148,163,184,.35);color:#cbd5e1}
+.calendar-chip.high{color:#fca5a5;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.4)}
+.calendar-chip.medium{color:#fde68a;background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.4)}
+.calendar-chip.low{color:#86efac;background:rgba(57,255,20,.1);border-color:rgba(57,255,20,.35)}
+.calendar-chip.buy{color:#86efac;background:rgba(57,255,20,.1);border-color:rgba(57,255,20,.4)}
+.calendar-chip.sell{color:#fca5a5;background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.4)}
+.calendar-count{font-family:var(--font-display,Orbitron,sans-serif);font-size:13px;letter-spacing:.08em;color:#7dd3fc}
+.calendar-signal{border:1px solid rgba(14,165,233,.35);background:rgba(8,18,36,.72);border-radius:14px;padding:12px;display:grid;gap:8px}
+.calendar-signal strong{font-size:18px;letter-spacing:.04em}
+.calendar-actions{display:flex;flex-wrap:wrap;gap:8px}
+.calendar-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.calendar-field{display:grid;gap:6px}
+.calendar-field label{font-size:11px;font-weight:800;letter-spacing:.08em;color:var(--muted,rgba(232,238,252,.55))}
+.calendar-field input,.calendar-field select,.calendar-field textarea{
+  width:100%;border-radius:12px;border:1px solid rgba(59,130,246,.28);background:rgba(4,8,16,.82);
+  color:inherit;padding:10px 12px;font:inherit
+}
+.calendar-table{width:100%;border-collapse:collapse;font-size:12px}
+.calendar-table th{text-align:left;color:var(--muted,rgba(232,238,252,.55));padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.08)}
+.calendar-table td{padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
+.calendar-empty{margin:0;padding:18px 8px;text-align:center;color:var(--muted,rgba(232,238,252,.55))}
+.calendar-modal{
+  position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:18px;
+  background:rgba(2,6,14,.72);backdrop-filter:blur(10px)
+}
+.calendar-modal-card{width:min(420px,100%);border-radius:20px;padding:18px;display:grid;gap:12px;
+  border:1px solid rgba(251,191,36,.4);background:rgba(8,12,22,.94);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.calendar-warn{margin:0;color:#fde68a;font-weight:800;letter-spacing:.08em}
+.os-dock-triple,.os-dock-quad{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+@media (max-width:640px){
+  .calendar-table-wrap{overflow:auto}
+  .calendar-table{min-width:720px}
+}

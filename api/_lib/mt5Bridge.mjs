@@ -139,3 +139,50 @@ export async function connectMt5Broker(input) {
 
   return { ok: false, error: lastErr };
 }
+
+export async function checkMt5Connect(id) {
+  const token = String(id || '').trim();
+  if (!token) return { ok: false, error: 'Broker/MT5 connection is not active' };
+  const result = await mt5Request(`/CheckConnect?id=${encodeURIComponent(token)}`);
+  const body = String(result.token || result.error || '');
+  if (result.ok && /ok/i.test(body)) return { ok: true };
+  return { ok: false, error: 'Broker/MT5 connection is not active' };
+}
+
+function optionalPrice(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Existing MT5 OrderSend proxy — omit TP/SL when they are none/0. */
+export async function sendMt5MarketOrder(input) {
+  const id = String(input?.id || '').trim();
+  const symbol = String(input?.symbol || '').trim();
+  const operation = String(input?.operation || '').trim();
+  const volume = Number(input?.volume);
+  if (!id) return { ok: false, error: 'Broker/MT5 connection is not active' };
+  if (!symbol) return { ok: false, error: 'Symbol is not valid' };
+  if (operation !== 'Buy' && operation !== 'Sell') {
+    return { ok: false, error: 'Direction is not valid' };
+  }
+  if (!Number.isFinite(volume) || volume <= 0) {
+    return { ok: false, error: 'Volume is not valid' };
+  }
+
+  const params = new URLSearchParams({
+    id,
+    symbol,
+    operation,
+    volume: String(volume),
+  });
+  if (input?.comment) params.set('comment', String(input.comment).slice(0, 31));
+  if (input?.slippage != null) params.set('slippage', String(input.slippage));
+  const stopLoss = optionalPrice(input?.stopLoss);
+  const takeProfit = optionalPrice(input?.takeProfit);
+  if (stopLoss) params.set('stoploss', String(stopLoss));
+  if (takeProfit) params.set('takeprofit', String(takeProfit));
+
+  const result = await mt5Request(`/OrderSend?${params.toString()}`, 20000);
+  if (!result.ok) return { ok: false, error: result.error || 'OrderSend failed' };
+  return { ok: true, ticket: String(result.token || '').trim(), raw: result.token };
+}

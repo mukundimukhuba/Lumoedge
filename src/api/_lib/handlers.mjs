@@ -20,6 +20,7 @@ import { mergeDatabases } from './mergeDb.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
+import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { tryQualifyCommission, tryReverseCommission } from './commissionEngine.mjs';
 import {
   matchSuperPassword,
@@ -159,6 +160,13 @@ export async function handleApi(req, res, pathname) {
       pathname,
     });
     if (passwordHandled) return true;
+
+    const calendarHandled = await handleCalendarRoutes(req, res, {
+      json,
+      readBody,
+      pathname,
+    });
+    if (calendarHandled) return true;
 
     if (pathname === '/api/mt5/connect') {
       if (req.method !== 'POST') {

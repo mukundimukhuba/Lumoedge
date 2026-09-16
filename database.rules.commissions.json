@@ -7,7 +7,11 @@
       "payoutDetails": { ".read": false, ".write": false },
       "commissionAudit": { ".read": false, ".write": false },
       "commissionProfiles": { ".read": false, ".write": false },
-      "adminSessions": { ".read": false, ".write": false }
+      "adminSessions": { ".read": false, ".write": false },
+      "economicEvents": { ".read": false, ".write": false },
+      "economicSignals": { ".read": false, ".write": false },
+      "signalExecutions": { ".read": false, ".write": false },
+      "signalExecutionLocks": { ".read": false, ".write": false }
     }
   }
 }
