@@ -58,6 +58,10 @@ export function mergeClientRecordLive(backup, live) {
       'paymentClaimedAt' in live
         ? live.paymentClaimedAt || undefined
         : backup.paymentClaimedAt,
+    paymentVerified:
+      'paymentVerified' in live
+        ? Boolean(live.paymentVerified)
+        : Boolean(backup.paymentVerified),
     licenseReleasedAt:
       'licenseReleasedAt' in live
         ? live.licenseReleasedAt || undefined
@@ -96,6 +100,10 @@ export function mergeClientRecord(prev, incoming) {
       'paymentClaimedAt' in incoming
         ? incoming.paymentClaimedAt || undefined
         : prev.paymentClaimedAt,
+    paymentVerified:
+      'paymentVerified' in incoming
+        ? Boolean(incoming.paymentVerified)
+        : Boolean(prev.paymentVerified),
     licenseReleasedAt:
       'licenseReleasedAt' in incoming
         ? incoming.licenseReleasedAt || undefined
@@ -197,6 +205,7 @@ export async function firebasePostClientEntry(input) {
     notifiedAt: new Date().toISOString(),
     paymentClaimed: Boolean(input.paymentClaimed),
     paymentClaimedAt: input.paymentClaimedAt || undefined,
+    paymentVerified: Boolean(input.paymentVerified),
   };
   freshClients.unshift(entry);
 

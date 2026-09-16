@@ -6,6 +6,8 @@ import {
   withdrawalProgress,
   rankEarners,
   filterEarners,
+  isPaidConfirmed,
+  referralBlockedReason,
 } from './api/_lib/commissionEngine.mjs';
 import { mentorGuard } from './api/_lib/commissionRoutes.mjs';
 
@@ -68,6 +70,7 @@ function paidClient(email, at = '2026-09-01T10:00:00.000Z') {
     lastName: 'Client',
     status: 'approved',
     paymentClaimed: true,
+    paymentVerified: true,
     paymentClaimedAt: at,
   };
 }
@@ -664,3 +667,79 @@ test('Join body cannot self-activate or set a personal rate', async () => {
   const auth = await io.read('lumo/auth');
   assert.equal(auth.admins[0].role, 'admin');
 });
+
+test('Approving a client or a self-reported I-paid flag is not a paid subscription', async () => {
+  assert.equal(
+    isPaidConfirmed({ status: 'approved', paymentClaimed: true, paymentVerified: false }),
+    false,
+  );
+  assert.equal(isPaidConfirmed({ status: 'approved', paymentClaimed: true, paymentVerified: true }), true);
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  const email = 'approved.only@example.com';
+  await seedBase(io, {
+    clients: [{ id: 'cli-approved', email, status: 'approved', paymentClaimed: true }],
+    vault: [assignedLicense(email)],
+  });
+  const result = await engine.tryQualify({ email, source: 'payment' });
+  assert.equal(result.created, false);
+  assert.equal(result.reason, 'not_paid');
+  const summary = await engine.getMentorSummary('LM-111111');
+  assert.equal(summary.totals.totalEarned, 0);
+  assert.equal(summary.totals.qualifyingReferrals, 0);
+});
+
+test('Mentor or admin emails cannot count as referred paying students', async () => {
+  assert.equal(
+    referralBlockedReason({ email: 'mentor@example.com' }, 'LM-111111', [
+      { id: 'LM-111111', email: 'mentor@example.com', role: 'admin' },
+    ]),
+    'self_referral',
+  );
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  const email = 'lawdntm@example.com';
+  await seedBase(io, {
+    auth: {
+      admins: [
+        { id: 'LM-303042', email, fullName: 'Lawd', role: 'admin' },
+        { id: 'LM-004821', email: 'super@example.com', fullName: 'Mukundi', role: 'super' },
+      ],
+    },
+    clients: [paidClient(email)],
+    vault: [assignedLicense(email, 'LM-303042', 'LUMO-SELF-KEY1-AAAA')],
+  });
+  await engine.setProfileStatus('LM-303042', 'active', { actorId: 'LM-004821' });
+  const result = await engine.tryQualify({ email, source: 'payment' });
+  assert.equal(result.created, false);
+  assert.equal(result.reason, 'self_referral');
+  const summary = await engine.getMentorSummary('LM-303042');
+  assert.equal(summary.totals.qualifyingReferrals, 0);
+});
+
+test('False available commissions from approve-as-paid are reversed on overview', async () => {
+  const io = createMemoryIo();
+  const engine = createCommissionEngine(io);
+  const email = 'itshepeng@example.com';
+  await seedBase(io, {
+    auth: { admins: [{ id: 'LM-962265', email, fullName: 'Itshepeng', role: 'admin' }] },
+    clients: [{ id: 'cli-false', email, status: 'approved', paymentClaimed: true, paymentVerified: false }],
+    vault: [assignedLicense(email, 'LM-962265', 'LUMO-FALSE-KEY1-AAAA')],
+  });
+  await io.write('lumo/commissions/fp:false1', {
+    eventId: 'fp:false1',
+    mentorId: 'LM-962265',
+    amount: 50,
+    status: 'available',
+    source: 'payment',
+    clientRef: 'cli-false',
+    createdAt: '2026-09-16T10:00:00.000Z',
+  });
+  const overview = await engine.getAdminOverview();
+  const row = overview.earners.find((item) => item.mentorId === 'LM-962265');
+  assert.equal(row?.totals.totalEarned || 0, 0);
+  assert.equal(row?.referrals || 0, 0);
+  const stored = await io.read('lumo/commissions/fp:false1');
+  assert.equal(stored.status, 'reversed');
+});
+

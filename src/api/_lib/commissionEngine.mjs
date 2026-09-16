@@ -73,7 +73,19 @@ export function isPaidConfirmed(client) {
   if (!client || typeof client !== 'object') return false;
   const status = String(client.status || '').trim().toLowerCase();
   if (status === 'rejected') return false;
-  return status === 'approved' || client.paymentClaimed === true;
+  // Super "Mark as paid" only. Approving a client or a self-reported
+  // "I paid" checkbox is not a purchased subscription.
+  return client.paymentVerified === true;
+}
+
+export function referralBlockedReason(client, mentorId, admins = []) {
+  const email = normalizeEmail(client?.email);
+  if (!email) return 'missing_client';
+  const roster = toList(admins);
+  const mentor = roster.find((row) => String(row?.id || '').trim() === String(mentorId || '').trim());
+  if (mentor && normalizeEmail(mentor.email) === email) return 'self_referral';
+  if (roster.some((row) => normalizeEmail(row?.email) === email)) return 'staff_account';
+  return '';
 }
 
 export function parseIsoMs(value) {
@@ -496,8 +508,12 @@ export function createCommissionEngine(io = firebaseIo) {
 
     const settings = await ensureSettings();
     const existingMap = await loadCommissions();
-    if (existingMap[eventId]) {
-      return { ok: true, created: false, reason: 'already_exists', commission: existingMap[eventId] };
+    const existing = existingMap[eventId];
+    if (existing && existing.reason === 'previously_paid') {
+      return { ok: true, created: false, reason: 'already_exists', commission: existing };
+    }
+    if (existing && QUALIFYING_STATUSES.has(String(existing.status || ''))) {
+      return { ok: true, created: false, reason: 'already_exists', commission: existing };
     }
 
     const clients = toList(await io.read('lumo/clients'));
@@ -539,6 +555,12 @@ export function createCommissionEngine(io = firebaseIo) {
     const assigned = findAssignedLicenseForEmail(vault, workspaces, normalized);
     if (!assigned) {
       return { ok: true, created: false, reason: 'no_license' };
+    }
+
+    const admins = await loadAdmins();
+    const blocked = referralBlockedReason(client, assigned.mentorId, admins);
+    if (blocked) {
+      return { ok: true, created: false, reason: blocked, mentorId: assigned.mentorId };
     }
 
     const profiles = await loadProfiles();
@@ -607,6 +629,42 @@ export function createCommissionEngine(io = firebaseIo) {
       reason: next.reverseReason,
     });
     return { ok: true, reversed: true, commission: next };
+  }
+
+  function clientForCommission(row, clients) {
+    const list = toList(clients);
+    return (
+      list.find((item) => String(item?.id || '') === String(row?.clientRef || '')) ||
+      list.find((item) => clientRefFor(item, item?.email) === String(row?.clientRef || '')) ||
+      findClientByEmail(list, row?.clientEmail) ||
+      null
+    );
+  }
+
+  async function reconcileInvalidCommissions() {
+    const map = await loadCommissions();
+    const clients = toList(await io.read('lumo/clients'));
+    const admins = await loadAdmins();
+    let reversed = 0;
+    for (const row of Object.values(map)) {
+      if (!row || row.source === 'adjustment') continue;
+      if (!QUALIFYING_STATUSES.has(String(row.status || ''))) continue;
+      const client = clientForCommission(row, clients);
+      let reason = '';
+      if (!isPaidConfirmed(client)) reason = 'not_a_paid_subscription';
+      else reason = referralBlockedReason(client, row.mentorId, admins);
+      if (!reason) continue;
+      await tryReverse({
+        eventId: row.eventId,
+        reason:
+          reason === 'self_referral' || reason === 'staff_account'
+            ? 'Staff or self-referral is not a paid student subscription'
+            : 'No purchased subscription — approval or "I paid" is not a sale',
+        actorId: 'system:reconcile',
+      });
+      reversed += 1;
+    }
+    return reversed;
   }
 
   function summarizeMentor(allCommissions, allPayouts, details, settings, mentorId) {
@@ -686,6 +744,7 @@ export function createCommissionEngine(io = firebaseIo) {
 
   async function getMentorSummary(mentorId) {
     const settings = await ensureSettings();
+    await reconcileInvalidCommissions();
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
     const detailsMap = await loadPayoutDetails();
@@ -951,6 +1010,7 @@ export function createCommissionEngine(io = firebaseIo) {
     filter = 'all',
   } = {}) {
     const settings = await ensureSettings();
+    await reconcileInvalidCommissions();
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
     const detailsMap = await loadPayoutDetails();
@@ -1383,6 +1443,7 @@ export function createCommissionEngine(io = firebaseIo) {
     writeSettings,
     tryQualify,
     tryReverse,
+    reconcileInvalidCommissions,
     getMentorSummary,
     savePayoutDetails,
     requestPayout,

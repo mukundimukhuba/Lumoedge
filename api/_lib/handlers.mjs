@@ -257,13 +257,12 @@ export async function handleApi(req, res, pathname) {
         status: body.status || 'pending',
         paymentClaimed: body.paymentClaimed,
         paymentClaimedAt: body.paymentClaimedAt,
+        paymentVerified: false,
       });
-      if (body.status === 'approved' || body.paymentClaimed) {
+      if (String(body.status || '').toLowerCase() === 'approved') {
         created =
           (await firebasePatchClientById(email, {
             status: 'approved',
-            paymentClaimed: true,
-            paymentClaimedAt: body.paymentClaimedAt || new Date().toISOString(),
           })) || created;
       }
       if (!created) {
@@ -274,9 +273,6 @@ export async function handleApi(req, res, pathname) {
       db.clients = mergeClients(db.clients || [], [created]);
       mirrorClientToSuper(db, created);
       await saveDb(db, sha);
-      if (created.status === 'approved' || created.paymentClaimed) {
-        await tryQualifyCommission({ email: created.email, source: 'payment', actorId: 'system:client-create' });
-      }
       json(res, 201, created);
       return true;
     }
@@ -299,7 +295,7 @@ export async function handleApi(req, res, pathname) {
           reason: 'Subscription cancelled or payment rejected',
           actorId: 'system:client-patch',
         });
-      } else {
+      } else if (fbUpdated.paymentVerified === true) {
         await tryQualifyCommission({
           email: fbUpdated.email,
           source: 'payment',
