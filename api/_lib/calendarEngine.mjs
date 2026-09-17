@@ -553,6 +553,9 @@ export function createCalendarEngine(io = firebaseIo) {
       deactivatedAt: status === 'inactive' ? io.nowIso() : current.deactivatedAt || '',
     };
     await writeRow(SIGNALS_ROOT, id, next);
+    if (status === 'inactive') {
+      await purgeOrphanSignalEvents(current.eventId);
+    }
     return { ok: true, signal: adminSignalView(next, io.nowMs()) };
   }
 
@@ -568,7 +571,13 @@ export function createCalendarEngine(io = firebaseIo) {
   async function purgeOrphanSignalEvents(preferEventId = '') {
     const remaining = await listSignals();
     const used = new Set(
-      remaining.map((row) => String(row?.eventId || '').trim()).filter(Boolean),
+      remaining
+        .filter((row) => {
+          const status = String(row?.status || '').toLowerCase();
+          return status !== 'inactive' && status !== 'draft' && status !== 'expired';
+        })
+        .map((row) => String(row?.eventId || '').trim())
+        .filter(Boolean),
     );
     const events = await listEvents();
     const targets = preferEventId

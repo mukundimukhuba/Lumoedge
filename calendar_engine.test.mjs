@@ -555,3 +555,28 @@ test('Deleting a Super signal removes the leftover event card from the student c
   assert.equal(after.events.some((row) => String(row.name).toLowerCase() === 'fomc' && row.date === '2026-09-17'), false);
 });
 
+test('Deactivating a Super signal also removes the leftover unofficial event card', async () => {
+  const io = createMemoryIo('2026-09-17T06:50:00.000Z');
+  const engine = createCalendarEngine(io);
+  await seedLicenses(io);
+  const created = await engine.createSignal(
+    {
+      eventName: 'Fomc',
+      date: '2026-09-17',
+      time: '14:30',
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+      activationAt: '2026-09-17T14:30:00.000Z',
+      expirationAt: '2026-09-17T19:30:00.000Z',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.ok, true);
+  const stopped = await engine.setSignalStatus(created.signal.id, 'inactive', 'LM-004821');
+  assert.equal(stopped.ok, true);
+  assert.equal(await io.read(`lumo/economicEvents/${created.event.id}`), null);
+  const after = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(after.signals.length, 0);
+  assert.equal(after.events.some((row) => String(row.name).toLowerCase() === 'fomc' && row.date === '2026-09-17'), false);
+});
+

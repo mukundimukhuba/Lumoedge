@@ -139,9 +139,9 @@ function CalendarStudentPage() {
       throw new Error("Active license required.");
     }
     const url = apiUrl(
-      `/api/calendar?email=${encodeURIComponent(auth.email)}&licenseKey=${encodeURIComponent(auth.licenseKey)}`,
+      `/api/calendar?email=${encodeURIComponent(auth.email)}&licenseKey=${encodeURIComponent(auth.licenseKey)}&v=cal-gone3`,
     );
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || "Could not load calendar");
     setData(body);
@@ -151,6 +151,18 @@ function CalendarStudentPage() {
 
   R.useEffect(() => {
     load().catch((err) => setError(err.message || "Could not load calendar."));
+    const refresh = () => load().catch(() => {});
+    const timer = window.setInterval(refresh, 15000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", refresh);
+    };
   }, [load]);
 
   R.useEffect(() => {

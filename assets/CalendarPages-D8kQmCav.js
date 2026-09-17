@@ -53,6 +53,7 @@ function sessionHeaders() {
 
 async function api(path, options = {}) {
   const res = await fetch(apiUrl(path), {
+    cache: "no-store",
     ...options,
     headers: { ...sessionHeaders(), ...(options.headers || {}) },
   });
