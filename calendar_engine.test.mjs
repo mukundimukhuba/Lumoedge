@@ -60,6 +60,10 @@ function createMemoryIo(now = '2026-09-16T14:00:00.000Z') {
 }
 
 async function seedLicenses(io) {
+  await io.write('lumo/store/workspaces/LM-004821', {
+    eas: [{ id: 'ea-unlimited-bull', name: 'Unlimited Bull' }],
+    profile: { eaDisplayName: 'Unlimited Bull' },
+  });
   await io.write('lumo/vault', [
     {
       id: 'lic-bull',
@@ -299,7 +303,7 @@ test('duplicate execution is blocked and another EA cannot execute the signal', 
     mt5Id: 'mt5-token',
   });
   assert.equal(other.ok, false);
-  assert.match(other.error, /EA\/Bot/i);
+  assert.match(other.error, /EA/i);
 });
 
 test('students without an active license or MT5 connection cannot execute', async () => {
@@ -338,3 +342,85 @@ test('students without an active license or MT5 connection cannot execute', asyn
   assert.equal(noMt5.ok, false);
   assert.match(noMt5.error, /MT5|Broker/i);
 });
+
+test('calendar uses Super Admin EA only and publishes without choosing a bot', async () => {
+  const io = createMemoryIo('2026-09-16T14:31:00.000Z');
+  const engine = createCalendarEngine(io);
+  await seedLicenses(io);
+  const bots = await engine.listBots();
+  assert.deepEqual(bots, [{ id: 'ea-unlimited-bull', name: 'Unlimited Bull' }]);
+  const created = await engine.createSignal(
+    {
+      eventName: 'NFP',
+      date: '2026-09-16',
+      time: '14:30',
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+      botId: 'Other Bot',
+      botName: 'Other Bot',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.signal.botId, 'ea-unlimited-bull');
+  assert.equal(created.signal.botName, 'Unlimited Bull');
+  assert.equal(created.signal.status, 'published');
+  const bull = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(bull.signals.length, 1);
+  const other = await engine.listStudentCalendar('other@student.com', 'LUMO-OTHR-TEST-BBBB');
+  assert.equal(other.signals.length, 0);
+});
+
+test('Super-owned license becomes the calendar EA without a bot picker', async () => {
+  const io = createMemoryIo('2026-09-16T14:31:00.000Z');
+  const engine = createCalendarEngine(io);
+  await io.write('lumo/vault', [
+    {
+      id: 'lic-super',
+      key: 'LUMO-MINE-TEST-AAAA',
+      status: 'assigned',
+      assignedEmail: 'mine@student.com',
+      eaId: 'ea-mine',
+      eaName: 'My Private EA',
+      ownerAdminId: 'LM-004821',
+    },
+  ]);
+  const created = await engine.createSignal(
+    {
+      eventName: 'CPI',
+      date: '2026-09-16',
+      time: '14:30',
+      symbol: 'XAUUSD',
+      direction: 'SELL',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.signal.botName, 'My Private EA');
+  assert.equal(created.signal.status, 'published');
+  const mine = await engine.listStudentCalendar('mine@student.com', 'LUMO-MINE-TEST-AAAA');
+  assert.equal(mine.ok, true);
+  assert.equal(mine.signals.length, 1);
+});
+
+test('fallback Super EA publishes when Super has no licenses yet', async () => {
+  const io = createMemoryIo('2026-09-16T14:31:00.000Z');
+  const engine = createCalendarEngine(io);
+  const created = await engine.createSignal(
+    {
+      eventName: 'GDP',
+      date: '2026-09-16',
+      time: '14:30',
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.signal.botId, 'ea-lumo-edge');
+  assert.equal(created.signal.botName, 'Lumo Edge');
+  assert.equal(created.signal.status, 'published');
+  const bots = await engine.listBots();
+  assert.equal(bots.length, 1);
+  assert.equal(bots[0].name, 'Lumo Edge');
+});
+

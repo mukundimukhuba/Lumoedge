@@ -142,7 +142,7 @@ test('backend rejects unauthorized execute and isolation bypass', async () => {
     engine,
   });
   assert.equal(other.statusCode, 403);
-  assert.match(other.body.error, /EA\/Bot/i);
+  assert.match(other.body.error, /EA/i);
 
   const noLicense = await callRoute({
     method: 'GET',

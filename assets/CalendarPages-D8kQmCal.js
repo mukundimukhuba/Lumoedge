@@ -21,8 +21,6 @@ const EMPTY_FORM = {
   time: "14:30",
   currency: "USD",
   impact: "HIGH",
-  botId: "",
-  botName: "",
   symbol: "XAUUSD",
   direction: "BUY",
   message: "NFP BUY — Execute the news trade when the signal becomes active.",
@@ -91,18 +89,19 @@ function fromLocalInput(value) {
   return Number.isNaN(d.getTime()) ? "" : d.toISOString();
 }
 
-function SignalForm({ bots, initial, busy, onSubmit, onCancel }) {
+function SignalForm({ superEa, initial, busy, onSubmit, onCancel }) {
   const [form, setForm] = R.useState(() => ({ ...EMPTY_FORM, ...initial }));
   const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const eaName = superEa?.name || superEa?.id || "Your EA";
   return Y.jsxs("form", {
     className: "calendar-card",
     onSubmit: (ev) => {
       ev.preventDefault();
-      const bot = bots.find((row) => row.id === form.botId || row.name === form.botId);
       onSubmit({
         ...form,
-        botId: form.botId,
-        botName: bot?.name || form.botName || form.botId,
+        botId: superEa?.id || "",
+        botName: eaName,
+        status: initial?.id ? undefined : "published",
         activationAt: fromLocalInput(form.activationAt) || undefined,
         expirationAt: fromLocalInput(form.expirationAt) || undefined,
         takeProfit: form.takeProfit,
@@ -111,7 +110,7 @@ function SignalForm({ bots, initial, busy, onSubmit, onCancel }) {
       });
     },
     children: [
-      Y.jsx("h3", { style: { margin: 0 }, children: initial?.id ? "Edit signal" : "Create signal" }),
+      Y.jsx("h3", { style: { margin: 0 }, children: initial?.id ? "Edit signal" : "Send signal" }),
       Y.jsxs("div", {
         className: "calendar-grid",
         children: [
@@ -133,21 +132,9 @@ function SignalForm({ bots, initial, busy, onSubmit, onCancel }) {
               }),
             ],
           }),
-          Y.jsxs(Field, {
-            label: "EA/BOT",
-            children: [
-              Y.jsxs("select", {
-                value: form.botId,
-                onChange: (ev) => set("botId", ev.target.value),
-                required: true,
-                children: [
-                  Y.jsx("option", { value: "", children: "Select EA/Bot" }),
-                  bots.map((bot) =>
-                    Y.jsx("option", { value: bot.id, children: bot.name }, bot.id),
-                  ),
-                ],
-              }),
-            ],
+          Y.jsx(Field, {
+            label: "YOUR EA",
+            children: Y.jsx("input", { value: eaName, readOnly: true }),
           }),
           Y.jsx(Field, { label: "SYMBOL", children: Y.jsx("input", { value: form.symbol, onChange: (ev) => set("symbol", ev.target.value.toUpperCase()), required: true }) }),
           Y.jsxs(Field, {
@@ -177,7 +164,7 @@ function SignalForm({ bots, initial, busy, onSubmit, onCancel }) {
       Y.jsxs("div", {
         className: "calendar-actions",
         children: [
-          Y.jsx("button", { type: "submit", className: "btn btn-blue", disabled: busy, children: busy ? "Saving…" : "Save signal" }),
+          Y.jsx("button", { type: "submit", className: "btn btn-blue", disabled: busy, children: busy ? "Sending…" : initial?.id ? "Save changes" : "Send signal" }),
           onCancel
             ? Y.jsx("button", { type: "button", className: "btn btn-ghost", onClick: onCancel, children: "Cancel" })
             : null,
@@ -192,7 +179,6 @@ function CalendarAdminPage() {
   const [bots, setBots] = R.useState([]);
   const [signals, setSignals] = R.useState([]);
   const [view, setView] = R.useState("all");
-  const [botId, setBotId] = R.useState("");
   const [error, setError] = R.useState("");
   const [notice, setNotice] = R.useState("");
   const [busy, setBusy] = R.useState(false);
@@ -202,11 +188,11 @@ function CalendarAdminPage() {
   const load = R.useCallback(async () => {
     const [botData, signalData] = await Promise.all([
       api("/api/calendar/admin/bots"),
-      api(`/api/calendar/admin/signals?view=${encodeURIComponent(view)}${botId ? `&botId=${encodeURIComponent(botId)}` : ""}`),
+      api(`/api/calendar/admin/signals?view=${encodeURIComponent(view)}`),
     ]);
     setBots(botData.bots || []);
     setSignals(signalData.signals || []);
-  }, [view, botId]);
+  }, [view]);
 
   R.useEffect(() => {
     load().catch((err) => setError(err.message || "Could not load calendar."));
@@ -236,7 +222,7 @@ function CalendarAdminPage() {
     children: [
       Y.jsx("p", { className: "calendar-kicker", children: "SUPER ADMIN" }),
       Y.jsx("h1", { className: "calendar-title", children: "Economic Calendar Signals" }),
-      Y.jsx("p", { className: "calendar-lead", children: "Private news signals stay isolated by EA/Bot. Only licensed students on that bot can see or execute them." }),
+      Y.jsx("p", { className: "calendar-lead", children: "News signals send on your EA only. Licensed students on your EA see them — you do not pick other bots." }),
       error ? Y.jsx("p", { className: "error", children: error }) : null,
       notice ? Y.jsx("p", { style: { margin: 0, color: "var(--green)", fontWeight: 700 }, children: notice }) : null,
       Y.jsxs("div", {
@@ -258,14 +244,6 @@ function CalendarAdminPage() {
               id,
             ),
           ),
-          Y.jsxs("select", {
-            value: botId,
-            onChange: (ev) => setBotId(ev.target.value),
-            children: [
-              Y.jsx("option", { value: "", children: "All EA/Bots" }),
-              bots.map((bot) => Y.jsx("option", { value: bot.id, children: bot.name }, bot.id)),
-            ],
-          }),
           Y.jsx("button", {
             type: "button",
             className: "btn btn-blue",
@@ -273,13 +251,13 @@ function CalendarAdminPage() {
               setEditing(null);
               setShowForm(true);
             },
-            children: "Create signal",
+            children: "Send signal",
           }),
         ],
       }),
       showForm
         ? Y.jsx(SignalForm, {
-            bots,
+            superEa: bots[0] || { id: "ea-lumo-edge", name: "Lumo Edge" },
             initial: editing
               ? {
                   ...EMPTY_FORM,
@@ -313,7 +291,7 @@ function CalendarAdminPage() {
                 }
                 setShowForm(false);
                 setEditing(null);
-              }, editing?.id ? "Signal updated." : "Signal saved as draft."),
+              }, editing?.id ? "Signal updated." : "Signal sent to your EA students."),
           })
         : null,
       signals.length
@@ -326,7 +304,7 @@ function CalendarAdminPage() {
                   children: Y.jsxs("tr", {
                     children: [
                       Y.jsx("th", { children: "Event" }),
-                      Y.jsx("th", { children: "EA/Bot" }),
+                      Y.jsx("th", { children: "Your EA" }),
                       Y.jsx("th", { children: "Signal" }),
                       Y.jsx("th", { children: "Window" }),
                       Y.jsx("th", { children: "Status" }),

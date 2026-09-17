@@ -16,6 +16,8 @@ export const EVENTS_ROOT = 'lumo/economicEvents';
 export const SIGNALS_ROOT = 'lumo/economicSignals';
 export const EXECUTIONS_ROOT = 'lumo/signalExecutions';
 export const LOCKS_ROOT = 'lumo/signalExecutionLocks';
+export const SUPER_ADMIN_ID = 'LM-004821';
+export const DEFAULT_SUPER_EA = { id: 'ea-lumo-edge', name: 'Lumo Edge' };
 
 export const firebaseIo = {
   nowMs: () => Date.now(),
@@ -106,6 +108,18 @@ export function botsMatch(licenseOrBot, botId) {
   const id = botKey(licenseOrBot?.eaId || licenseOrBot?.botId || licenseOrBot?.id);
   const name = botKey(licenseOrBot?.eaName || licenseOrBot?.botName || licenseOrBot?.name);
   return Boolean(want && (id === want || name === want));
+}
+
+export function ownerIsSuper(entry) {
+  const owner = String(entry?.ownerAdminId || entry?.adminId || '').trim();
+  return owner === SUPER_ADMIN_ID;
+}
+
+export function isSuperEa(ea) {
+  if (!ea) return false;
+  const id = botKey(ea.id || ea.botId || ea.eaId);
+  const name = botKey(ea.name || ea.botName || ea.eaName);
+  return id === botKey(SUPER_ADMIN_ID) || id === botKey(DEFAULT_SUPER_EA.id) || name === botKey(DEFAULT_SUPER_EA.name);
 }
 
 export function parseTimeMs(value, fallbackMs = 0) {
@@ -253,6 +267,37 @@ export function createCalendarEngine(io = firebaseIo) {
     return next;
   }
 
+  async function resolveSuperEa() {
+    const superWs = await io.read(`lumo/store/workspaces/${SUPER_ADMIN_ID}`);
+    const eas = toList(superWs?.eas);
+    for (const ea of eas) {
+      const id = String(ea?.id || '').trim();
+      const name = String(ea?.name || ea?.eaName || '').trim();
+      if (id || name) return { id: id || name, name: name || id };
+    }
+    const profileName = String(
+      superWs?.profile?.eaDisplayName || superWs?.profile?.mentorName || superWs?.profile?.eaName || '',
+    ).trim();
+    if (profileName) return { id: profileName, name: profileName };
+
+    const vault = toList(await io.read('lumo/vault'));
+    const owned = vault.find((entry) => ownerIsSuper(entry) && String(entry?.status || '') !== 'deleted');
+    if (owned) {
+      const id = String(owned.eaId || '').trim();
+      const name = String(owned.eaName || '').trim();
+      if (id || name) return { id: id || name, name: name || id };
+    }
+    return { ...DEFAULT_SUPER_EA };
+  }
+
+  function signalMatchesLicense(signal, license) {
+    if (!signal || !license?.ok) return false;
+    if (botsMatch(signal, license.botId) || botsMatch(license.license, signal.botId) || botsMatch(license.license, signal.botName)) {
+      return true;
+    }
+    return ownerIsSuper(license.license) && (botsMatch(signal, SUPER_ADMIN_ID) || isSuperEa(signal));
+  }
+
   async function upsertEvent(input, actorId = '') {
     const name = String(input?.name || input?.eventName || '').trim();
     if (!name) return { ok: false, error: 'EVENT NAME required' };
@@ -306,12 +351,12 @@ export function createCalendarEngine(io = firebaseIo) {
 
   async function createSignal(input, actorId = '') {
     const eventName = String(input?.eventName || input?.name || '').trim();
-    const botId = String(input?.botId || input?.eaId || '').trim();
-    const botName = String(input?.botName || input?.eaName || '').trim();
+    const superEa = await resolveSuperEa();
+    const botId = superEa.id;
+    const botName = superEa.name;
     const symbol = normalizeSymbol(input?.symbol);
     const direction = normalizeDirection(input?.direction);
     if (!eventName) return { ok: false, error: 'EVENT NAME required' };
-    if (!botId && !botName) return { ok: false, error: 'EA/BOT required' };
     if (!isValidSymbol(symbol)) return { ok: false, error: 'SYMBOL is not valid' };
     if (!direction) return { ok: false, error: 'DIRECTION must be BUY or SELL' };
 
@@ -321,6 +366,8 @@ export function createCalendarEngine(io = firebaseIo) {
     const eventAt = parseTimeMs(event.at, eventAtMs(event.date, event.time));
     const window = parseActivationExpiration(input, eventAt);
     const id = String(input?.id || '').trim() || io.id();
+    const requestedStatus = String(input?.status || 'published').trim().toLowerCase();
+    const status = requestedStatus === 'draft' || requestedStatus === 'inactive' ? requestedStatus : 'published';
     const signal = {
       id,
       eventId: event.id,
@@ -329,8 +376,8 @@ export function createCalendarEngine(io = firebaseIo) {
       eventTime: event.time,
       currency: event.currency,
       impact: event.impact,
-      botId: botId || botName,
-      botName: botName || botId,
+      botId,
+      botName,
       symbol,
       direction,
       message: String(input?.message || '').trim(),
@@ -338,11 +385,12 @@ export function createCalendarEngine(io = firebaseIo) {
       stopLoss: optionalPrice(input?.stopLoss),
       activationAt: window.activationAt,
       expirationAt: window.expirationAt,
-      status: String(input?.status || 'draft') === 'published' ? 'published' : 'draft',
+      status,
       createdAt: io.nowIso(),
       createdBy: actorId,
       updatedAt: io.nowIso(),
       updatedBy: actorId,
+      publishedAt: status === 'published' ? io.nowIso() : '',
     };
     await writeRow(SIGNALS_ROOT, id, signal);
     return { ok: true, signal: adminSignalView(signal, io.nowMs()), event };
@@ -391,13 +439,11 @@ export function createCalendarEngine(io = firebaseIo) {
       merged.activationAt = window.activationAt;
       merged.expirationAt = window.expirationAt;
     }
+    const superEa = await resolveSuperEa();
     const symbol = normalizeSymbol(merged.symbol);
     const direction = normalizeDirection(merged.direction);
     if (!isValidSymbol(symbol)) return { ok: false, error: 'SYMBOL is not valid' };
     if (!direction) return { ok: false, error: 'DIRECTION must be BUY or SELL' };
-    if (!String(merged.botId || merged.botName || '').trim()) {
-      return { ok: false, error: 'EA/BOT required' };
-    }
     const next = {
       ...current,
       ...merged,
@@ -407,6 +453,8 @@ export function createCalendarEngine(io = firebaseIo) {
       eventTime: eventResult.event.time,
       currency: eventResult.event.currency,
       impact: eventResult.event.impact,
+      botId: superEa.id,
+      botName: superEa.name,
       symbol,
       direction,
       takeProfit: merged.takeProfit,
@@ -463,30 +511,8 @@ export function createCalendarEngine(io = firebaseIo) {
   }
 
   async function listBots() {
-    const vault = toList(await io.read('lumo/vault'));
-    const byKey = new Map();
-    for (const entry of vault) {
-      if (!entry || entry.status === 'deleted') continue;
-      const id = String(entry.eaId || '').trim();
-      const name = String(entry.eaName || '').trim();
-      if (!id && !name) continue;
-      const key = botKey(id || name);
-      if (!key || byKey.has(key)) {
-        const prev = byKey.get(key);
-        if (prev && name && !prev.name) prev.name = name;
-        continue;
-      }
-      byKey.set(key, { id: id || name, name: name || id });
-    }
-    const superWs = await io.read('lumo/store/workspaces/LM-004821');
-    for (const ea of toList(superWs?.eas)) {
-      const id = String(ea?.id || '').trim();
-      const name = String(ea?.name || '').trim();
-      if (!id && !name) continue;
-      const key = botKey(id || name);
-      if (!byKey.has(key)) byKey.set(key, { id: id || name, name: name || id });
-    }
-    return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const superEa = await resolveSuperEa();
+    return [{ id: superEa.id, name: superEa.name }];
   }
 
   async function resolveStudentLicense(email, licenseKey) {
@@ -576,7 +602,7 @@ export function createCalendarEngine(io = firebaseIo) {
     const signals = [];
     for (const signal of await listSignals()) {
       if (signal.status === 'draft' || signal.status === 'inactive') continue;
-      if (!botsMatch(signal, license.botId) && !botsMatch(license.license, signal.botId) && !botsMatch(license.license, signal.botName)) {
+      if (!signalMatchesLicense(signal, license)) {
         continue;
       }
       const persisted = deriveSignalStatus(signal, nowMs) === 'EXPIRED' ? { ...signal, status: 'EXPIRED' } : signal;
@@ -622,8 +648,8 @@ export function createCalendarEngine(io = firebaseIo) {
 
     const signal = await getSignal(signalId);
     if (!signal) return { ok: false, error: 'Signal not found' };
-    if (!botsMatch(signal, license.botId) && !botsMatch(license.license, signal.botId) && !botsMatch(license.license, signal.botName)) {
-      return { ok: false, error: 'Signal does not belong to your EA/Bot' };
+    if (!signalMatchesLicense(signal, license)) {
+      return { ok: false, error: 'Signal does not belong to your EA' };
     }
     if (String(signal.status || '') === 'draft' || String(signal.status || '') === 'inactive') {
       return { ok: false, error: 'Signal is not active' };
@@ -743,6 +769,7 @@ export function createCalendarEngine(io = firebaseIo) {
     listAdminSignals,
     listEvents,
     listBots,
+    resolveSuperEa,
     resolveStudentLicense,
     listStudentCalendar,
     executeSignal,
