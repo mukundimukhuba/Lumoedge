@@ -4,6 +4,7 @@ export const NEWS_IMPACT = 'HIGH';
 export const UPCOMING_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 export const UPCOMING_HORIZON_MS = 90 * 24 * 60 * 60 * 1000;
 export const LIVE_CALENDAR_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json';
+export const NEWS_SYNC_TTL_MS = 60 * 1000;
 
 /** Official 2026 US release dates (Eastern Time). NFP/CPI/PPI 8:30 ET, FOMC 2:00 ET. */
 export const BAKED_US_NEWS_2026 = [
@@ -182,13 +183,15 @@ export function newsFromLiveRows(rows, nowMs = Date.now()) {
 }
 
 export async function fetchLiveNewsRows(fetchFn) {
-  const run = fetchFn === undefined ? globalThis.fetch : fetchFn;
+  const run = typeof fetchFn === 'function' ? fetchFn : globalThis.fetch;
   if (typeof run !== 'function') return [];
   const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = ctrl ? setTimeout(() => ctrl.abort(), 8000) : null;
   try {
-    const res = await fetchFn(LIVE_CALENDAR_URL, {
+    const url = `${LIVE_CALENDAR_URL}?t=${Date.now()}`;
+    const res = await run(url, {
       headers: { Accept: 'application/json', 'User-Agent': 'LumoEdgeCalendar/1.0' },
+      cache: 'no-store',
       signal: ctrl?.signal,
     });
     if (!res?.ok) return [];

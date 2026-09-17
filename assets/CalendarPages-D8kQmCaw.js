@@ -84,6 +84,16 @@ function toLocalInput(value) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function localNewsClock(iso, fallbackDate = "", fallbackTime = "") {
+  const ms = Date.parse(iso || "");
+  if (!Number.isFinite(ms)) return { date: fallbackDate, time: fallbackTime };
+  const d = new Date(ms);
+  return {
+    date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+    time: `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+  };
+}
+
 function fromLocalInput(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -215,6 +225,16 @@ function CalendarAdminPage() {
 
   R.useEffect(() => {
     load().catch((err) => setError(err.message || "Could not load calendar."));
+    const refresh = () => load().catch(() => {});
+    const timer = window.setInterval(refresh, 15000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [load]);
 
   async function run(fn, okMessage) {
@@ -241,7 +261,7 @@ function CalendarAdminPage() {
     children: [
       Y.jsx("p", { className: "calendar-kicker", children: "SUPER ADMIN" }),
       Y.jsx("h1", { className: "calendar-title", children: "Economic Calendar Signals" }),
-      Y.jsx("p", { className: "calendar-lead", children: "Upcoming NFP, CPI, PPI, and FOMC show automatically with no signal until you send one on your EA." }),
+      Y.jsx("p", { className: "calendar-lead", children: "Live NFP, CPI, PPI, and FOMC. Times follow the actual release on this phone." }),
       error ? Y.jsx("p", { className: "error", children: error }) : null,
       notice ? Y.jsx("p", { style: { margin: 0, color: "var(--green)", fontWeight: 700 }, children: notice }) : null,
       Y.jsxs("div", {
@@ -320,6 +340,7 @@ function CalendarAdminPage() {
               Y.jsx("h2", { className: "calendar-title", style: { fontSize: "18px" }, children: "Upcoming news" }),
               events.map((event) => {
                 const linked = signals.find((row) => row.eventId === event.id);
+                const clock = localNewsClock(event.at, event.date, event.time);
                 return Y.jsxs(
                   "article",
                   {
@@ -331,7 +352,7 @@ function CalendarAdminPage() {
                           Y.jsx("h3", { style: { margin: 0 }, children: event.name }),
                           Y.jsx("span", { className: "calendar-chip high", children: "HIGH IMPACT" }),
                           Y.jsx("span", { className: "calendar-chip", children: event.currency || "USD" }),
-                          Y.jsx("span", { className: "calendar-chip", children: `${event.date || ""} ${event.time || ""} ET` }),
+                          Y.jsx("span", { className: "calendar-chip", children: `${clock.date} ${clock.time}` }),
                         ],
                       }),
                       linked
@@ -350,6 +371,8 @@ function CalendarAdminPage() {
                                   eventTime: event.time,
                                   date: event.date,
                                   time: event.time,
+                                  at: event.at,
+                                  activationAt: event.at,
                                   currency: event.currency || "USD",
                                   impact: "HIGH",
                                   eventId: event.id,

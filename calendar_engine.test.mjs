@@ -13,6 +13,7 @@ import {
   bakedNewsEvents,
   classifyUsdNewsTitle,
   detectUpcomingNews,
+  fetchLiveNewsRows,
   newsFromLiveRows,
   TRACKED_NEWS,
 } from './api/_lib/economicNews.mjs';
@@ -523,6 +524,43 @@ test('live calendar fetch failure still shows the official upcoming schedule', a
   });
   assert.ok(detected.some((row) => row.name === 'NFP'));
   assert.ok(detected.every((row) => ['NFP', 'CPI', 'PPI', 'FOMC'].includes(row.name)));
+});
+
+test('live Forex Factory times win over the baked schedule for the same news day', async () => {
+  const nowMs = Date.parse('2026-09-17T08:00:00.000Z');
+  const live = newsFromLiveRows(
+    [{ title: 'Non-Farm Employment Change', country: 'USD', date: '2026-10-02T08:30:00-04:00' }],
+    nowMs,
+  );
+  assert.equal(live.length, 1);
+  assert.equal(live[0].name, 'NFP');
+  assert.equal(live[0].source, 'live');
+  assert.equal(live[0].time, '08:30');
+  assert.equal(live[0].at, '2026-10-02T12:30:00.000Z');
+
+  const original = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = async (url) => {
+    called += 1;
+    assert.match(String(url), /ff_calendar_thisweek\.json/);
+    return {
+      ok: true,
+      json: async () => [
+        { title: 'CPI m/m', country: 'USD', date: '2026-10-14T08:30:00-04:00' },
+      ],
+    };
+  };
+  try {
+    const rows = await fetchLiveNewsRows();
+    const detected = await detectUpcomingNews({ nowMs });
+    assert.equal(called >= 2, true);
+    assert.equal(rows[0].title, 'CPI m/m');
+    const cpi = detected.find((row) => row.name === 'CPI' && row.date === '2026-10-14');
+    assert.equal(cpi.source, 'live');
+    assert.equal(cpi.at, '2026-10-14T12:30:00.000Z');
+  } finally {
+    globalThis.fetch = original;
+  }
 });
 
 test('Deleting a Super signal removes the leftover event card from the student calendar', async () => {

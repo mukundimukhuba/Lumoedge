@@ -43,6 +43,16 @@ function formatCountdown(ms) {
   return `${s} SECONDS UNTIL NEWS`;
 }
 
+function localNewsClock(iso, fallbackDate = "", fallbackTime = "") {
+  const ms = Date.parse(iso || "");
+  if (!Number.isFinite(ms)) return { date: fallbackDate, time: fallbackTime };
+  const d = new Date(ms);
+  return {
+    date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+    time: `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+  };
+}
+
 function priceLabel(value) {
   return value == null || value === "" ? "NONE" : String(value);
 }
@@ -72,6 +82,7 @@ function ConfirmModal({ signal, onCancel, onConfirm, busy }) {
 }
 
 function EventCard({ event, signal, nowMs, onExecute }) {
+  const clock = localNewsClock(event.at, event.date, event.time || signal?.eventTime);
   const targetMs = signal
     ? Date.parse(signal.status === "upcoming" ? signal.activationAt : signal.expirationAt)
     : Date.parse(event.at);
@@ -92,8 +103,8 @@ function EventCard({ event, signal, nowMs, onExecute }) {
         className: "calendar-meta",
         children: [
           Y.jsx("span", { className: "calendar-chip", children: event.currency || signal?.currency || "" }),
-          Y.jsx("span", { className: "calendar-chip", children: event.time || signal?.eventTime || "" }),
-          Y.jsx("span", { className: "calendar-chip", children: event.date || "" }),
+          Y.jsx("span", { className: "calendar-chip", children: clock.time }),
+          Y.jsx("span", { className: "calendar-chip", children: clock.date }),
         ],
       }),
       Y.jsx("p", {
@@ -139,7 +150,7 @@ function CalendarStudentPage() {
       throw new Error("Active license required.");
     }
     const url = apiUrl(
-      `/api/calendar?email=${encodeURIComponent(auth.email)}&licenseKey=${encodeURIComponent(auth.licenseKey)}&v=cal-gone3`,
+      `/api/calendar?email=${encodeURIComponent(auth.email)}&licenseKey=${encodeURIComponent(auth.licenseKey)}&v=cal-live1`,
     );
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
     const body = await res.json().catch(() => ({}));
@@ -211,7 +222,7 @@ function CalendarStudentPage() {
     children: [
       Y.jsx("p", { className: "calendar-kicker", children: "STUDENT" }),
       Y.jsx("h1", { className: "calendar-title", children: "Economic Calendar" }),
-      Y.jsx("p", { className: "calendar-lead", children: "Upcoming NFP, CPI, PPI, and FOMC. A private signal appears only if Super Admin sends one for your EA." }),
+      Y.jsx("p", { className: "calendar-lead", children: "Live NFP, CPI, PPI, and FOMC. Times follow the actual release on your phone." }),
       error ? Y.jsx("p", { className: "error", children: error }) : null,
       notice ? Y.jsx("p", { style: { margin: 0, color: "var(--green)", fontWeight: 700 }, children: notice }) : null,
       events.length || extraSignals.length

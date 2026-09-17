@@ -11,6 +11,7 @@ import {
   isOfficialNewsEvent,
   isTrackedNewsName,
   normalizeNewsName,
+  NEWS_SYNC_TTL_MS,
   TRACKED_NEWS,
   UPCOMING_HORIZON_MS,
   UPCOMING_LOOKBACK_MS,
@@ -35,6 +36,7 @@ export const firebaseIo = {
   read: firebaseRead,
   write: firebaseWrite,
   id: () => `cal_${randomBytes(8).toString('hex')}`,
+  fetch: (...args) => globalThis.fetch(...args),
   checkConnect: checkMt5Connect,
   sendOrder: sendMt5MarketOrder,
 };
@@ -190,6 +192,7 @@ export function publicEvent(event, nowMs = Date.now()) {
     at: at ? new Date(at).toISOString() : '',
     remainingMs: at ? at - nowMs : 0,
     source: event?.source || '',
+    live: String(event?.source || '').toLowerCase() === 'live',
   };
 }
 
@@ -265,10 +268,13 @@ export function createCalendarEngine(io = firebaseIo) {
       const at = parseTimeMs(row?.at, eventAtMs(row?.date, row?.time));
       return at >= nowMs - UPCOMING_LOOKBACK_MS;
     });
-    if (last && nowMs - last < 30 * 60 * 1000 && hasUpcoming) {
+    if (last && nowMs - last < NEWS_SYNC_TTL_MS && hasUpcoming && meta?.live) {
       return { ok: true, synced: false, events: existing };
     }
-    const detected = await detectUpcomingNews({ nowMs, fetchFn: io.fetch });
+    const detected = await detectUpcomingNews({
+      nowMs,
+      fetchFn: typeof io.fetch === 'function' ? io.fetch : undefined,
+    });
     for (const row of detected) {
       const prev =
         existing.find((item) => String(item?.id || '') === row.id) ||
@@ -287,6 +293,7 @@ export function createCalendarEngine(io = firebaseIo) {
     await io.write(NEWS_SYNC_ROOT, {
       at: nowIso,
       count: detected.length,
+      live: detected.some((row) => row.source === 'live'),
       names: TRACKED_NEWS.slice(),
     });
     return { ok: true, synced: true, events: detected };
