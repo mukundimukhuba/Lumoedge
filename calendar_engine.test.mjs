@@ -525,3 +525,33 @@ test('live calendar fetch failure still shows the official upcoming schedule', a
   assert.ok(detected.every((row) => ['NFP', 'CPI', 'PPI', 'FOMC'].includes(row.name)));
 });
 
+test('Deleting a Super signal removes the leftover event card from the student calendar', async () => {
+  const io = createMemoryIo('2026-09-17T06:50:00.000Z');
+  const engine = createCalendarEngine(io);
+  await seedLicenses(io);
+  const created = await engine.createSignal(
+    {
+      eventName: 'Fomc',
+      date: '2026-09-17',
+      time: '14:30',
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+      activationAt: '2026-09-17T14:30:00.000Z',
+      expirationAt: '2026-09-17T19:30:00.000Z',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.event.id.startsWith('news-'), false);
+  const before = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(before.signals.length, 1);
+  const deleted = await engine.deleteSignal(created.signal.id);
+  assert.equal(deleted.ok, true);
+  assert.equal(await io.read(`lumo/economicSignals/${created.signal.id}`), null);
+  assert.equal(await io.read(`lumo/economicEvents/${created.event.id}`), null);
+  const after = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(after.signals.length, 0);
+  assert.equal(after.events.some((row) => row.date === '2026-09-17'), false);
+  assert.equal(after.events.some((row) => String(row.name).toLowerCase() === 'fomc' && row.date === '2026-09-17'), false);
+});
+

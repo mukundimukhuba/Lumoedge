@@ -10,7 +10,6 @@ import {
   detectUpcomingNews,
   isOfficialNewsEvent,
   isTrackedNewsName,
-  newsEventId,
   normalizeNewsName,
   TRACKED_NEWS,
   UPCOMING_HORIZON_MS,
@@ -295,6 +294,7 @@ export function createCalendarEngine(io = firebaseIo) {
 
   async function listUpcomingNews() {
     await syncUpcomingNews();
+    await purgeOrphanSignalEvents();
     const nowMs = io.nowMs();
     return (await listEvents())
       .filter((event) => isTrackedNewsName(event?.name) && isOfficialNewsEvent(event))
@@ -388,11 +388,7 @@ export function createCalendarEngine(io = firebaseIo) {
           String(row?.date || '') === day &&
           String(row?.time || '') === (time || formatClock(at)),
       );
-    const id =
-      existing?.id ||
-      requestedId ||
-      (newsName ? newsEventId(newsName, day) : '') ||
-      io.id();
+    const id = existing?.id || requestedId || io.id();
     const event = {
       id,
       name: newsName || name,
@@ -565,7 +561,24 @@ export function createCalendarEngine(io = firebaseIo) {
     if (!current) return { ok: false, error: 'Signal not found' };
     const ok = await io.write(`${SIGNALS_ROOT}/${encodeURIComponent(id)}`, null);
     if (!ok) return { ok: false, error: 'Could not delete signal' };
+    await purgeOrphanSignalEvents(current.eventId);
     return { ok: true };
+  }
+
+  async function purgeOrphanSignalEvents(preferEventId = '') {
+    const remaining = await listSignals();
+    const used = new Set(
+      remaining.map((row) => String(row?.eventId || '').trim()).filter(Boolean),
+    );
+    const events = await listEvents();
+    const targets = preferEventId
+      ? events.filter((event) => String(event?.id || '') === String(preferEventId))
+      : events;
+    for (const event of targets) {
+      const id = String(event?.id || '').trim();
+      if (!id || used.has(id) || isOfficialNewsEvent(event)) continue;
+      await io.write(`${EVENTS_ROOT}/${encodeURIComponent(id)}`, null);
+    }
   }
 
   async function listAdminSignals({ botId = '', view = 'all' } = {}) {
@@ -676,6 +689,7 @@ export function createCalendarEngine(io = firebaseIo) {
     const license = await resolveStudentLicense(email, licenseKey);
     if (!license.ok) return license;
     await syncUpcomingNews();
+    await purgeOrphanSignalEvents();
     const nowMs = io.nowMs();
     const signals = [];
     for (const signal of await listSignals()) {
