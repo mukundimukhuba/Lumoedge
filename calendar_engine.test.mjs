@@ -484,6 +484,16 @@ test('students see upcoming NFP CPI PPI FOMC with no signal until Super sends on
   assert.deepEqual(names.sort(), ['CPI', 'FOMC', 'NFP', 'PPI']);
   assert.ok(calendar.events.every((row) => ['NFP', 'CPI', 'PPI', 'FOMC'].includes(row.name)));
   assert.ok(calendar.events.some((row) => row.name === 'NFP' && row.date === '2026-10-02'));
+  await io.write('lumo/economicEvents/cal_leftover', {
+    id: 'cal_leftover',
+    name: 'Fomc',
+    date: '2026-09-17',
+    time: '14:30',
+    at: '2026-09-17T14:30:00.000Z',
+  });
+  const cleaned = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(cleaned.events.some((row) => row.id === 'cal_leftover'), false);
+  assert.equal(cleaned.events.some((row) => row.date === '2026-09-17'), false);
   const nfp = calendar.events.find((row) => row.name === 'NFP' && row.date === '2026-10-02');
   const signal = await engine.createSignal(
     {

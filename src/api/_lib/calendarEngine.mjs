@@ -8,6 +8,7 @@ import {
 import { checkMt5Connect, sendMt5MarketOrder } from './mt5Bridge.mjs';
 import {
   detectUpcomingNews,
+  isOfficialNewsEvent,
   isTrackedNewsName,
   newsEventId,
   normalizeNewsName,
@@ -179,15 +180,17 @@ function formatDate(ms) {
 
 export function publicEvent(event, nowMs = Date.now()) {
   const at = parseTimeMs(event?.at, eventAtMs(event?.date, event?.time));
+  const name = normalizeNewsName(event?.name) || String(event?.name || '').trim();
   return {
     id: event?.id || '',
-    name: String(event?.name || '').trim(),
+    name,
     date: event?.date || formatDate(at),
     time: event?.time || formatClock(at),
     currency: String(event?.currency || '').trim().toUpperCase(),
     impact: normalizeImpact(event?.impact),
     at: at ? new Date(at).toISOString() : '',
     remainingMs: at ? at - nowMs : 0,
+    source: event?.source || '',
   };
 }
 
@@ -294,7 +297,7 @@ export function createCalendarEngine(io = firebaseIo) {
     await syncUpcomingNews();
     const nowMs = io.nowMs();
     return (await listEvents())
-      .filter((event) => isTrackedNewsName(event?.name))
+      .filter((event) => isTrackedNewsName(event?.name) && isOfficialNewsEvent(event))
       .map((event) => publicEvent(event, nowMs))
       .filter((event) => {
         const at = parseTimeMs(event.at, 0);
@@ -690,7 +693,7 @@ export function createCalendarEngine(io = firebaseIo) {
     const visibleEvents = (await listEvents())
       .map((event) => publicEvent(event, nowMs))
       .filter((event) => {
-        const tracked = isTrackedNewsName(event.name);
+        const tracked = isTrackedNewsName(event.name) && isOfficialNewsEvent(event);
         const linked = signalEventIds.has(event.id);
         if (!tracked && !linked) return false;
         const at = parseTimeMs(event.at, 0);

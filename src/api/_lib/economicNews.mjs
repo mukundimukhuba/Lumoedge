@@ -36,6 +36,12 @@ export function isTrackedNewsName(value) {
   return TRACKED_NEWS.includes(normalizeNewsName(value));
 }
 
+export function isOfficialNewsEvent(event) {
+  const id = String(event?.id || '');
+  const source = String(event?.source || '').toLowerCase();
+  return id.startsWith('news-') || source === 'schedule' || source === 'live';
+}
+
 export function newsEventId(name, date) {
   const type = normalizeNewsName(name);
   const day = String(date || '').trim().slice(0, 10);
