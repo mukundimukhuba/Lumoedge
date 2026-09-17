@@ -114,7 +114,22 @@ function SignalForm({ superEa, initial, busy, onSubmit, onCancel }) {
       Y.jsxs("div", {
         className: "calendar-grid",
         children: [
-          Y.jsx(Field, { label: "EVENT NAME", children: Y.jsx("input", { value: form.eventName, onChange: (ev) => set("eventName", ev.target.value), required: true }) }),
+          Y.jsxs(Field, {
+            label: "EVENT NAME",
+            children: [
+              Y.jsxs("select", {
+                value: form.eventName,
+                onChange: (ev) => set("eventName", ev.target.value),
+                required: true,
+                children: [
+                  Y.jsx("option", { value: "NFP", children: "NFP" }),
+                  Y.jsx("option", { value: "CPI", children: "CPI" }),
+                  Y.jsx("option", { value: "PPI", children: "PPI" }),
+                  Y.jsx("option", { value: "FOMC", children: "FOMC" }),
+                ],
+              }),
+            ],
+          }),
           Y.jsx(Field, { label: "DATE", children: Y.jsx("input", { type: "date", value: form.date, onChange: (ev) => set("date", ev.target.value), required: true }) }),
           Y.jsx(Field, { label: "TIME", children: Y.jsx("input", { type: "time", value: form.time, onChange: (ev) => set("time", ev.target.value), required: true }) }),
           Y.jsx(Field, { label: "CURRENCY", children: Y.jsx("input", { value: form.currency, onChange: (ev) => set("currency", ev.target.value.toUpperCase()), required: true }) }),
@@ -178,6 +193,7 @@ function CalendarAdminPage() {
   const admin = readJson(AUTH_KEY, {})?.admin || null;
   const [bots, setBots] = R.useState([]);
   const [signals, setSignals] = R.useState([]);
+  const [events, setEvents] = R.useState([]);
   const [view, setView] = R.useState("all");
   const [error, setError] = R.useState("");
   const [notice, setNotice] = R.useState("");
@@ -186,12 +202,14 @@ function CalendarAdminPage() {
   const [showForm, setShowForm] = R.useState(false);
 
   const load = R.useCallback(async () => {
-    const [botData, signalData] = await Promise.all([
+    const [botData, signalData, eventData] = await Promise.all([
       api("/api/calendar/admin/bots"),
       api(`/api/calendar/admin/signals?view=${encodeURIComponent(view)}`),
+      api("/api/calendar/admin/events"),
     ]);
     setBots(botData.bots || []);
     setSignals(signalData.signals || []);
+    setEvents(eventData.events || []);
   }, [view]);
 
   R.useEffect(() => {
@@ -222,7 +240,7 @@ function CalendarAdminPage() {
     children: [
       Y.jsx("p", { className: "calendar-kicker", children: "SUPER ADMIN" }),
       Y.jsx("h1", { className: "calendar-title", children: "Economic Calendar Signals" }),
-      Y.jsx("p", { className: "calendar-lead", children: "News signals send on your EA only. Licensed students on your EA see them — you do not pick other bots." }),
+      Y.jsx("p", { className: "calendar-lead", children: "Upcoming NFP, CPI, PPI, and FOMC show automatically with no signal until you send one on your EA." }),
       error ? Y.jsx("p", { className: "error", children: error }) : null,
       notice ? Y.jsx("p", { style: { margin: 0, color: "var(--green)", fontWeight: 700 }, children: notice }) : null,
       Y.jsxs("div", {
@@ -294,6 +312,60 @@ function CalendarAdminPage() {
               }, editing?.id ? "Signal updated." : "Signal sent to your EA students."),
           })
         : null,
+      events.length
+        ? Y.jsxs("div", {
+            style: { display: "grid", gap: "12px" },
+            children: [
+              Y.jsx("h2", { className: "calendar-title", style: { fontSize: "18px" }, children: "Upcoming news" }),
+              events.map((event) => {
+                const linked = signals.find((row) => row.eventId === event.id);
+                return Y.jsxs(
+                  "article",
+                  {
+                    className: "calendar-card",
+                    children: [
+                      Y.jsxs("div", {
+                        className: "calendar-row",
+                        children: [
+                          Y.jsx("h3", { style: { margin: 0 }, children: event.name }),
+                          Y.jsx("span", { className: "calendar-chip high", children: "HIGH IMPACT" }),
+                          Y.jsx("span", { className: "calendar-chip", children: event.currency || "USD" }),
+                          Y.jsx("span", { className: "calendar-chip", children: `${event.date || ""} ${event.time || ""} ET` }),
+                        ],
+                      }),
+                      linked
+                        ? Y.jsxs("p", { className: "calendar-count", children: ["SIGNAL: ", linked.symbol, " ", linked.direction] })
+                        : Y.jsx("p", { className: "calendar-lead", children: "No signal yet — showing news only." }),
+                      Y.jsx("button", {
+                        type: "button",
+                        className: "btn btn-blue",
+                        onClick: () => {
+                          setEditing(
+                            linked
+                              ? linked
+                              : {
+                                  eventName: event.name,
+                                  eventDate: event.date,
+                                  eventTime: event.time,
+                                  date: event.date,
+                                  time: event.time,
+                                  currency: event.currency || "USD",
+                                  impact: "HIGH",
+                                  eventId: event.id,
+                                },
+                          );
+                          setShowForm(true);
+                        },
+                        children: linked ? "Edit signal" : "Send signal",
+                      }),
+                    ],
+                  },
+                  event.id,
+                );
+              }),
+            ],
+          })
+        : Y.jsx("p", { className: "calendar-empty", children: "Detecting upcoming NFP, CPI, PPI, and FOMC…" }),
       signals.length
         ? Y.jsx("div", {
             className: "calendar-table-wrap",

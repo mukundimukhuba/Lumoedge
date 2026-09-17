@@ -119,7 +119,7 @@ function EventCard({ event, signal, nowMs, onExecute }) {
                   : Y.jsx("p", { className: "calendar-lead", children: "Execute becomes available when the news window opens." }),
             ],
           })
-        : Y.jsx("p", { className: "calendar-lead", children: "No private signal for your EA on this event." }),
+        : Y.jsx("p", { className: "calendar-lead", children: "Upcoming news — no signal yet." }),
     ],
   });
 }
@@ -199,7 +199,7 @@ function CalendarStudentPage() {
     children: [
       Y.jsx("p", { className: "calendar-kicker", children: "STUDENT" }),
       Y.jsx("h1", { className: "calendar-title", children: "Economic Calendar" }),
-      Y.jsx("p", { className: "calendar-lead", children: "News events plus a private signal only if Super Admin published one for your EA." }),
+      Y.jsx("p", { className: "calendar-lead", children: "Upcoming NFP, CPI, PPI, and FOMC. A private signal appears only if Super Admin sends one for your EA." }),
       error ? Y.jsx("p", { className: "error", children: error }) : null,
       notice ? Y.jsx("p", { style: { margin: 0, color: "var(--green)", fontWeight: 700 }, children: notice }) : null,
       events.length || extraSignals.length
@@ -211,7 +211,7 @@ function CalendarStudentPage() {
                   EventCard,
                   {
                     event,
-                    signal: byEvent.get(event.id) || signals.find((row) => row.eventName === event.name),
+                    signal: byEvent.get(event.id),
                     nowMs,
                     onExecute: setConfirm,
                   },

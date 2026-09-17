@@ -70,7 +70,9 @@ export async function handleCalendarRoutes(req, res, ctx) {
   }
 
   if (path === '/api/calendar/admin/events' && method === 'GET') {
-    const events = await engine.listEvents();
+    const events = engine.listUpcomingNews
+      ? await engine.listUpcomingNews()
+      : await engine.listEvents();
     json(res, 200, { ok: true, events });
     return true;
   }

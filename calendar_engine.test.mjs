@@ -9,6 +9,13 @@ import {
   normalizeDirection,
   optionalPrice,
 } from './api/_lib/calendarEngine.mjs';
+import {
+  bakedNewsEvents,
+  classifyUsdNewsTitle,
+  detectUpcomingNews,
+  newsFromLiveRows,
+  TRACKED_NEWS,
+} from './api/_lib/economicNews.mjs';
 
 function createMemoryIo(now = '2026-09-16T14:00:00.000Z') {
   const root = {};
@@ -50,6 +57,9 @@ function createMemoryIo(now = '2026-09-16T14:00:00.000Z') {
       return this.connectOk
         ? { ok: true }
         : { ok: false, error: 'Broker/MT5 connection is not active' };
+    },
+    async fetch() {
+      return { ok: false, json: async () => [] };
     },
     async sendOrder(input) {
       this.orders.push(input);
@@ -422,5 +432,86 @@ test('fallback Super EA publishes when Super has no licenses yet', async () => {
   const bots = await engine.listBots();
   assert.equal(bots.length, 1);
   assert.equal(bots[0].name, 'Lumo Edge');
+});
+
+test('only USD NFP, CPI, PPI, and FOMC titles count as tracked news', () => {
+  assert.equal(classifyUsdNewsTitle('Non-Farm Employment Change', 'USD'), 'NFP');
+  assert.equal(classifyUsdNewsTitle('CPI m/m', 'USD'), 'CPI');
+  assert.equal(classifyUsdNewsTitle('Producer Price Index', 'USD'), 'PPI');
+  assert.equal(classifyUsdNewsTitle('FOMC Statement', 'USD'), 'FOMC');
+  assert.equal(classifyUsdNewsTitle('Federal Funds Rate', 'USD'), 'FOMC');
+  assert.equal(classifyUsdNewsTitle('CPI m/m', 'CAD'), '');
+  assert.equal(classifyUsdNewsTitle('FOMC Member Bowman Speaks', 'USD'), '');
+  assert.equal(classifyUsdNewsTitle('FOMC Minutes', 'USD'), '');
+  assert.equal(classifyUsdNewsTitle('GDP', 'USD'), '');
+  assert.deepEqual(TRACKED_NEWS, ['NFP', 'CPI', 'PPI', 'FOMC']);
+});
+
+test('upcoming detector keeps those four news types and ignores other countries', () => {
+  const nowMs = Date.parse('2026-09-17T06:50:00.000Z');
+  const baked = bakedNewsEvents(nowMs);
+  assert.ok(baked.some((row) => row.name === 'NFP' && row.date === '2026-10-02'));
+  assert.ok(baked.some((row) => row.name === 'CPI' && row.date === '2026-10-14'));
+  assert.ok(baked.some((row) => row.name === 'PPI' && row.date === '2026-10-15'));
+  assert.ok(baked.some((row) => row.name === 'FOMC' && row.date === '2026-10-28'));
+  assert.equal(baked.some((row) => row.date === '2026-09-16'), false);
+  const live = newsFromLiveRows(
+    [
+      { title: 'CPI m/m', country: 'CAD', date: '2026-10-14T08:30:00-04:00' },
+      { title: 'FOMC Press Conference', country: 'USD', date: '2026-10-28T14:30:00-04:00' },
+      { title: 'GDP', country: 'USD', date: '2026-10-29T08:30:00-04:00' },
+    ],
+    nowMs,
+  );
+  assert.deepEqual(live.map((row) => row.name), ['FOMC']);
+});
+
+test('students see upcoming NFP CPI PPI FOMC with no signal until Super sends one', async () => {
+  const io = createMemoryIo('2026-09-17T06:50:00.000Z');
+  io.fetch = async () => ({
+    ok: true,
+    json: async () => [
+      { title: 'CPI m/m', country: 'CAD', date: '2026-09-17T08:30:00-04:00' },
+      { title: 'FOMC Member Speaks', country: 'USD', date: '2026-09-18T09:30:00-04:00' },
+    ],
+  });
+  const engine = createCalendarEngine(io);
+  await seedLicenses(io);
+  const calendar = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(calendar.ok, true);
+  assert.equal(calendar.signals.length, 0);
+  const names = [...new Set(calendar.events.map((row) => row.name))];
+  assert.deepEqual(names.sort(), ['CPI', 'FOMC', 'NFP', 'PPI']);
+  assert.ok(calendar.events.every((row) => ['NFP', 'CPI', 'PPI', 'FOMC'].includes(row.name)));
+  assert.ok(calendar.events.some((row) => row.name === 'NFP' && row.date === '2026-10-02'));
+  const nfp = calendar.events.find((row) => row.name === 'NFP' && row.date === '2026-10-02');
+  const signal = await engine.createSignal(
+    {
+      eventId: nfp.id,
+      eventName: 'NFP',
+      date: nfp.date,
+      time: nfp.time,
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+    },
+    'LM-004821',
+  );
+  assert.equal(signal.ok, true);
+  assert.equal(signal.event.id, nfp.id);
+  const after = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(after.signals.length, 1);
+  assert.equal(after.signals[0].eventId, nfp.id);
+  assert.equal(after.events.filter((row) => row.name === 'CPI').every((row) => row.id !== after.signals[0].eventId), true);
+});
+
+test('live calendar fetch failure still shows the official upcoming schedule', async () => {
+  const detected = await detectUpcomingNews({
+    nowMs: Date.parse('2026-09-17T06:50:00.000Z'),
+    fetchFn: async () => {
+      throw new Error('offline');
+    },
+  });
+  assert.ok(detected.some((row) => row.name === 'NFP'));
+  assert.ok(detected.every((row) => ['NFP', 'CPI', 'PPI', 'FOMC'].includes(row.name)));
 });
 

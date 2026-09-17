@@ -6,6 +6,15 @@ import {
   normalizeLicenseKey,
 } from './licenseClaim.mjs';
 import { checkMt5Connect, sendMt5MarketOrder } from './mt5Bridge.mjs';
+import {
+  detectUpcomingNews,
+  isTrackedNewsName,
+  newsEventId,
+  normalizeNewsName,
+  TRACKED_NEWS,
+  UPCOMING_HORIZON_MS,
+  UPCOMING_LOOKBACK_MS,
+} from './economicNews.mjs';
 
 export const DEFAULT_EXPIRY_MS = 5 * 60 * 60 * 1000;
 export const DIRECTIONS = new Set(['BUY', 'SELL']);
@@ -13,6 +22,7 @@ export const IMPACTS = new Set(['HIGH', 'MEDIUM', 'LOW']);
 export const STORED_STATUSES = new Set(['draft', 'published', 'inactive', 'EXPIRED']);
 
 export const EVENTS_ROOT = 'lumo/economicEvents';
+export const NEWS_SYNC_ROOT = 'lumo/economicCalendarSync';
 export const SIGNALS_ROOT = 'lumo/economicSignals';
 export const EXECUTIONS_ROOT = 'lumo/signalExecutions';
 export const LOCKS_ROOT = 'lumo/signalExecutionLocks';
@@ -195,6 +205,8 @@ export function publicStudentSignal(signal, execution, nowMs = Date.now()) {
     id: signal.id,
     eventId: signal.eventId || '',
     eventName: signal.eventName || '',
+    eventDate: signal.eventDate || '',
+    eventTime: signal.eventTime || '',
     symbol: signal.symbol,
     direction: signal.direction,
     message: signal.message || '',
@@ -238,6 +250,58 @@ export function createCalendarEngine(io = firebaseIo) {
 
   async function listEvents() {
     return toList(await readMap(EVENTS_ROOT));
+  }
+
+  async function syncUpcomingNews() {
+    const nowMs = io.nowMs();
+    const nowIso = io.nowIso();
+    const meta = await io.read(NEWS_SYNC_ROOT);
+    const last = parseTimeMs(meta?.at, 0);
+    const existing = await listEvents();
+    const hasUpcoming = existing.some((row) => {
+      if (!isTrackedNewsName(row?.name)) return false;
+      const at = parseTimeMs(row?.at, eventAtMs(row?.date, row?.time));
+      return at >= nowMs - UPCOMING_LOOKBACK_MS;
+    });
+    if (last && nowMs - last < 30 * 60 * 1000 && hasUpcoming) {
+      return { ok: true, synced: false, events: existing };
+    }
+    const detected = await detectUpcomingNews({ nowMs, fetchFn: io.fetch });
+    for (const row of detected) {
+      const prev =
+        existing.find((item) => String(item?.id || '') === row.id) ||
+        existing.find(
+          (item) =>
+            normalizeNewsName(item?.name) === row.name && String(item?.date || '') === row.date,
+        );
+      const event = {
+        ...(prev || {}),
+        ...row,
+        createdAt: prev?.createdAt || row.createdAt || nowIso,
+        updatedAt: nowIso,
+      };
+      await writeRow(EVENTS_ROOT, event.id, event);
+    }
+    await io.write(NEWS_SYNC_ROOT, {
+      at: nowIso,
+      count: detected.length,
+      names: TRACKED_NEWS.slice(),
+    });
+    return { ok: true, synced: true, events: detected };
+  }
+
+  async function listUpcomingNews() {
+    await syncUpcomingNews();
+    const nowMs = io.nowMs();
+    return (await listEvents())
+      .filter((event) => isTrackedNewsName(event?.name))
+      .map((event) => publicEvent(event, nowMs))
+      .filter((event) => {
+        const at = parseTimeMs(event.at, 0);
+        if (!at) return false;
+        return at >= nowMs - UPCOMING_LOOKBACK_MS && at <= nowMs + UPCOMING_HORIZON_MS;
+      })
+      .sort((a, b) => parseTimeMs(a.at) - parseTimeMs(b.at));
   }
 
   async function listSignals() {
@@ -306,18 +370,29 @@ export function createCalendarEngine(io = firebaseIo) {
     const at = parseTimeMs(input?.at, eventAtMs(date, time));
     if (!date && !at) return { ok: false, error: 'DATE required' };
     const events = await listEvents();
+    const newsName = normalizeNewsName(name);
+    const day = date || formatDate(at);
+    const requestedId = String(input?.id || input?.eventId || '').trim();
     const existing =
-      events.find((row) => String(row?.id || '') === String(input?.id || '')) ||
+      events.find((row) => String(row?.id || '') === requestedId) ||
+      (newsName &&
+        events.find(
+          (row) => normalizeNewsName(row?.name) === newsName && String(row?.date || '') === day,
+        )) ||
       events.find(
         (row) =>
           botKey(row?.name) === botKey(name) &&
-          String(row?.date || '') === (date || formatDate(at)) &&
+          String(row?.date || '') === day &&
           String(row?.time || '') === (time || formatClock(at)),
       );
-    const id = existing?.id || String(input?.id || '').trim() || io.id();
+    const id =
+      existing?.id ||
+      requestedId ||
+      (newsName ? newsEventId(newsName, day) : '') ||
+      io.id();
     const event = {
       id,
-      name,
+      name: newsName || name,
       date: date || formatDate(at),
       time: time || formatClock(at),
       currency: String(input?.currency || existing?.currency || '').trim().toUpperCase(),
@@ -597,8 +672,8 @@ export function createCalendarEngine(io = firebaseIo) {
   async function listStudentCalendar(email, licenseKey) {
     const license = await resolveStudentLicense(email, licenseKey);
     if (!license.ok) return license;
+    await syncUpcomingNews();
     const nowMs = io.nowMs();
-    const events = (await listEvents()).map((event) => publicEvent(event, nowMs));
     const signals = [];
     for (const signal of await listSignals()) {
       if (signal.status === 'draft' || signal.status === 'inactive') continue;
@@ -612,12 +687,17 @@ export function createCalendarEngine(io = firebaseIo) {
       signals.push(publicStudentSignal(persisted, execution, nowMs));
     }
     const signalEventIds = new Set(signals.map((row) => row.eventId).filter(Boolean));
-    const visibleEvents = events.filter((event) => {
-      if (signalEventIds.has(event.id)) return true;
-      const at = parseTimeMs(event.at, 0);
-      if (!at) return true;
-      return at >= nowMs - 2 * 3600000 && at <= nowMs + 14 * 86400000;
-    });
+    const visibleEvents = (await listEvents())
+      .map((event) => publicEvent(event, nowMs))
+      .filter((event) => {
+        const tracked = isTrackedNewsName(event.name);
+        const linked = signalEventIds.has(event.id);
+        if (!tracked && !linked) return false;
+        const at = parseTimeMs(event.at, 0);
+        if (linked) return true;
+        if (!at) return false;
+        return at >= nowMs - UPCOMING_LOOKBACK_MS && at <= nowMs + UPCOMING_HORIZON_MS;
+      });
     visibleEvents.sort((a, b) => parseTimeMs(a.at) - parseTimeMs(b.at));
     signals.sort((a, b) => parseTimeMs(a.activationAt) - parseTimeMs(b.activationAt));
     return {
@@ -768,6 +848,8 @@ export function createCalendarEngine(io = firebaseIo) {
     deleteSignal,
     listAdminSignals,
     listEvents,
+    listUpcomingNews,
+    syncUpcomingNews,
     listBots,
     resolveSuperEa,
     resolveStudentLicense,
