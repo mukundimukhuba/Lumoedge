@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   createCommissionEngine,
@@ -678,8 +679,15 @@ test('Approving a client or a self-reported I-paid flag is not a paid subscripti
   const engine = createCommissionEngine(io);
   const email = 'approved.only@example.com';
   await seedBase(io, {
-    clients: [{ id: 'cli-approved', email, status: 'approved', paymentClaimed: true }],
-    vault: [assignedLicense(email)],
+    clients: [{ id: 'cli-approved', email, status: 'approved', paymentClaimed: true, paymentVerified: false }],
+    vault: [
+      {
+        key: 'LUMO-TEST-KEY1-APPR',
+        status: 'active',
+        ownerAdminId: 'LM-111111',
+        clientEmail: email,
+      },
+    ],
   });
   const result = await engine.tryQualify({ email, source: 'payment' });
   assert.equal(result.created, false);
@@ -687,6 +695,107 @@ test('Approving a client or a self-reported I-paid flag is not a paid subscripti
   const summary = await engine.getMentorSummary('LM-111111');
   assert.equal(summary.totals.totalEarned, 0);
   assert.equal(summary.totals.qualifyingReferrals, 0);
+});
+
+test('Super assigning a license key after payment credits R50 without Mark as paid', async () => {
+  const io = createMemoryIo('2026-09-17T06:50:00.000Z');
+  const engine = createCommissionEngine(io);
+  const email = 'paid.student@example.com';
+  await seedBase(io, {
+    auth: {
+      admins: [
+        { id: 'LM-004821', email: 'super@example.com', fullName: 'Mukundi', role: 'super' },
+      ],
+    },
+    clients: [
+      {
+        id: 'cli-paid-student',
+        email,
+        firstName: 'Paid',
+        lastName: 'Student',
+        status: 'approved',
+        paymentClaimed: true,
+        paymentVerified: false,
+        paymentClaimedAt: '2026-09-17T06:45:45.482Z',
+      },
+    ],
+    vault: [
+      {
+        key: 'LUMO-BULL-KEY1-AAAA',
+        status: 'assigned',
+        assignedEmail: email,
+        assignedAt: '2026-09-17T06:45:54.471Z',
+        ownerAdminId: 'LM-004821',
+        eaId: 'ea-bull',
+        eaName: 'UNLIMITED BULLv1',
+      },
+    ],
+  });
+  await engine.setProfileStatus('LM-004821', 'active', { actorId: 'LM-004821' });
+  const result = await engine.tryQualify({ email, source: 'claim' });
+  assert.equal(result.created, true);
+  assert.equal(result.commission.amount, 50);
+  assert.equal(result.commission.mentorId, 'LM-004821');
+  const clients = await io.read('lumo/clients');
+  assert.equal(clients[0].paymentVerified, true);
+  const summary = await engine.getMentorSummary('LM-004821');
+  assert.equal(summary.totals.totalEarned, 50);
+  assert.equal(summary.totals.qualifyingReferrals, 1);
+});
+
+test('Opening My earnings credits a recent Super-assigned key and skips old vault keys', async () => {
+  const io = createMemoryIo('2026-09-17T07:00:00.000Z');
+  const engine = createCommissionEngine(io);
+  const recentEmail = 'today.buyer@example.com';
+  const oldEmail = 'old.assigned@example.com';
+  await seedBase(io, {
+    auth: {
+      admins: [{ id: 'LM-004821', email: 'super@example.com', fullName: 'Mukundi', role: 'super' }],
+    },
+    clients: [
+      {
+        id: 'cli-today',
+        email: recentEmail,
+        status: 'approved',
+        paymentClaimed: true,
+        paymentVerified: false,
+        paymentClaimedAt: '2026-09-17T06:45:45.482Z',
+      },
+      {
+        id: 'cli-old',
+        email: oldEmail,
+        status: 'approved',
+        paymentClaimed: true,
+        paymentVerified: false,
+        paymentClaimedAt: '2026-08-01T10:00:00.000Z',
+      },
+    ],
+    vault: [
+      {
+        key: 'LUMO-TODAY-KEY1-AAAA',
+        status: 'assigned',
+        assignedEmail: recentEmail,
+        assignedAt: '2026-09-17T06:45:54.471Z',
+        ownerAdminId: 'LM-004821',
+        eaName: 'UNLIMITED BULLv1',
+      },
+      {
+        key: 'LUMO-OLDVA-KEY1-AAAA',
+        status: 'assigned',
+        assignedEmail: oldEmail,
+        assignedAt: '2026-08-02T10:00:00.000Z',
+        ownerAdminId: 'LM-004821',
+        eaName: 'Legacy EA',
+      },
+    ],
+  });
+  await engine.setProfileStatus('LM-004821', 'active', { actorId: 'LM-004821' });
+  const summary = await engine.getMentorSummary('LM-004821');
+  assert.equal(summary.totals.totalEarned, 50);
+  assert.equal(summary.totals.qualifyingReferrals, 1);
+  assert.equal(summary.commissions.length, 1);
+  const oldStillUnpaid = (await io.read('lumo/clients')).find((row) => row.email === oldEmail);
+  assert.equal(oldStillUnpaid.paymentVerified, false);
 });
 
 test('Mentor or admin emails cannot count as referred paying students', async () => {
@@ -741,5 +850,13 @@ test('False available commissions from approve-as-paid are reversed on overview'
   assert.equal(row?.referrals || 0, 0);
   const stored = await io.read('lumo/commissions/fp:false1');
   assert.equal(stored.status, 'reversed');
+});
+
+test('Commissions CSS keeps tap targets at 16px so iOS does not zoom', () => {
+  const css = readFileSync(new URL('./assets/commission-Cw7kQm9B.css', import.meta.url), 'utf8');
+  assert.match(css, /font-size:16px!important/);
+  assert.match(css, /touch-action:manipulation/);
+  assert.match(css, /\.commission-page\{[^}]*overflow-x:hidden/);
+  assert.match(css, /\.commission-actions\{display:grid/);
 });
 

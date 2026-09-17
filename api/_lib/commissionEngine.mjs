@@ -78,6 +78,67 @@ export function isPaidConfirmed(client) {
   return client.paymentVerified === true;
 }
 
+/** Super (or mentor) handing out an assigned license is the real sale signal. */
+export const ASSIGNED_LICENSE_CREDIT_AFTER = '2026-09-16T18:00:00.000Z';
+export const ASSIGNED_LICENSE_CREDIT_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+export function isRecentAssignedLicense(assignedAt, now = new Date().toISOString()) {
+  const assignedMs = parseIsoMs(assignedAt);
+  if (!assignedMs) return false;
+  const nowMs = parseIsoMs(now) || Date.now();
+  const windowStart = Math.max(
+    parseIsoMs(ASSIGNED_LICENSE_CREDIT_AFTER) || 0,
+    nowMs - ASSIGNED_LICENSE_CREDIT_WINDOW_MS,
+  );
+  return assignedMs >= windowStart;
+}
+
+export function recentAssignedEmails(vault, workspaces, now) {
+  const emails = new Set();
+  const consider = (entry) => {
+    if (!entry || String(entry.status || '').toLowerCase() !== 'assigned') return;
+    if (!isRecentAssignedLicense(entry.assignedAt, now)) return;
+    const email = normalizeEmail(entry.assignedEmail);
+    if (email) emails.add(email);
+  };
+  for (const entry of dbList(vault)) consider(entry);
+  for (const workspace of Object.values(workspaces || {})) {
+    for (const license of dbList(workspace?.licenses)) consider(license);
+  }
+  return [...emails];
+}
+
+function replaceClientInStore(raw, nextClient) {
+  const email = normalizeEmail(nextClient?.email);
+  const id = String(nextClient?.id || '').trim();
+  const matches = (row) =>
+    row &&
+    ((email && normalizeEmail(row.email) === email) ||
+      (id && String(row.id || '').trim() === id));
+  if (Array.isArray(raw)) {
+    let found = false;
+    const next = raw.map((row) => {
+      if (!matches(row)) return row;
+      found = true;
+      return { ...row, ...nextClient };
+    });
+    if (!found && nextClient) next.unshift(nextClient);
+    return next;
+  }
+  if (raw && typeof raw === 'object') {
+    const out = { ...raw };
+    let found = false;
+    for (const [key, row] of Object.entries(out)) {
+      if (!matches(row)) continue;
+      out[key] = { ...row, ...nextClient };
+      found = true;
+    }
+    if (!found && nextClient) out[nextClient.id || email || 'client'] = nextClient;
+    return out;
+  }
+  return nextClient ? [nextClient] : raw;
+}
+
 export function referralBlockedReason(client, mentorId, admins = []) {
   const email = normalizeEmail(client?.email);
   if (!email) return 'missing_client';
@@ -516,11 +577,20 @@ export function createCommissionEngine(io = firebaseIo) {
       return { ok: true, created: false, reason: 'already_exists', commission: existing };
     }
 
-    const clients = toList(await io.read('lumo/clients'));
+    const clientsRaw = await io.read('lumo/clients');
+    const clients = toList(clientsRaw);
     const client = findClientByEmail(clients, normalized);
-    const paid = isPaidConfirmed(client);
+    const vault = await io.read('lumo/vault');
+    const workspaces = await loadWorkspaceMap();
+    const assigned = findAssignedLicenseForEmail(vault, workspaces, normalized);
+    // Super giving an assigned license after payment is the sale.
+    // Approve / self-reported "I paid" without a key is still unpaid.
+    const paid = isPaidConfirmed(client) || Boolean(assigned);
     if (!paid) {
       return { ok: true, created: false, reason: 'not_paid' };
+    }
+    if (!assigned) {
+      return { ok: true, created: false, reason: 'no_license' };
     }
 
     if (previouslyPaidBeforeLaunch(client, settings.launchedAt)) {
@@ -550,13 +620,6 @@ export function createCommissionEngine(io = firebaseIo) {
       return { ok: true, created: false, reason: 'previously_paid', commission: skipped };
     }
 
-    const vault = await io.read('lumo/vault');
-    const workspaces = await loadWorkspaceMap();
-    const assigned = findAssignedLicenseForEmail(vault, workspaces, normalized);
-    if (!assigned) {
-      return { ok: true, created: false, reason: 'no_license' };
-    }
-
     const admins = await loadAdmins();
     const blocked = referralBlockedReason(client, assigned.mentorId, admins);
     if (blocked) {
@@ -567,6 +630,18 @@ export function createCommissionEngine(io = firebaseIo) {
     const profile = profiles[assigned.mentorId] || null;
     if (!profileCanEarn(profile)) {
       return { ok: true, created: false, reason: 'not_enrolled', mentorId: assigned.mentorId };
+    }
+
+    if (client && client.paymentVerified !== true) {
+      const stamped = {
+        ...client,
+        paymentClaimed: true,
+        paymentClaimedAt: client.paymentClaimedAt || assigned.assignedAt || nowIso(),
+        paymentVerified: true,
+        paymentVerifiedAt: nowIso(),
+        paymentVerifiedSource: 'assigned_license',
+      };
+      await io.write('lumo/clients', replaceClientInStore(clientsRaw, stamped));
     }
 
     const holdHours = Number(settings.holdHours) || 0;
@@ -645,13 +720,18 @@ export function createCommissionEngine(io = firebaseIo) {
     const map = await loadCommissions();
     const clients = toList(await io.read('lumo/clients'));
     const admins = await loadAdmins();
+    const vault = await io.read('lumo/vault');
+    const workspaces = await loadWorkspaceMap();
     let reversed = 0;
     for (const row of Object.values(map)) {
       if (!row || row.source === 'adjustment') continue;
       if (!QUALIFYING_STATUSES.has(String(row.status || ''))) continue;
       const client = clientForCommission(row, clients);
+      const assigned = client
+        ? findAssignedLicenseForEmail(vault, workspaces, client.email)
+        : null;
       let reason = '';
-      if (!isPaidConfirmed(client)) reason = 'not_a_paid_subscription';
+      if (!isPaidConfirmed(client) && !assigned) reason = 'not_a_paid_subscription';
       else reason = referralBlockedReason(client, row.mentorId, admins);
       if (!reason) continue;
       await tryReverse({
@@ -665,6 +745,18 @@ export function createCommissionEngine(io = firebaseIo) {
       reversed += 1;
     }
     return reversed;
+  }
+
+  async function qualifyRecentAssignedLicenses({ source = 'claim', actorId = 'system:assigned-license' } = {}) {
+    const vault = await io.read('lumo/vault');
+    const workspaces = await loadWorkspaceMap();
+    const emails = recentAssignedEmails(vault, workspaces, nowIso());
+    let created = 0;
+    for (const email of emails) {
+      const result = await tryQualify({ email, source, actorId });
+      if (result?.created) created += 1;
+    }
+    return { ok: true, scanned: emails.length, created };
   }
 
   function summarizeMentor(allCommissions, allPayouts, details, settings, mentorId) {
@@ -744,6 +836,7 @@ export function createCommissionEngine(io = firebaseIo) {
 
   async function getMentorSummary(mentorId) {
     const settings = await ensureSettings();
+    await qualifyRecentAssignedLicenses({ source: 'claim', actorId: 'system:earnings-scan' });
     await reconcileInvalidCommissions();
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
@@ -1010,6 +1103,7 @@ export function createCommissionEngine(io = firebaseIo) {
     filter = 'all',
   } = {}) {
     const settings = await ensureSettings();
+    await qualifyRecentAssignedLicenses({ source: 'claim', actorId: 'system:overview-scan' });
     await reconcileInvalidCommissions();
     const promoted = await promoteHeld(await loadCommissions());
     const payouts = await loadPayouts();
@@ -1444,6 +1538,7 @@ export function createCommissionEngine(io = firebaseIo) {
     tryQualify,
     tryReverse,
     reconcileInvalidCommissions,
+    qualifyRecentAssignedLicenses,
     getMentorSummary,
     savePayoutDetails,
     requestPayout,

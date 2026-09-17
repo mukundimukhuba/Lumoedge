@@ -152,6 +152,39 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       await saveWorkspace(adminId, merged.store.workspaces[adminId]);
     }
 
+    try {
+      const {
+        tryQualifyCommission,
+        findAssignedLicenseForEmail,
+        isRecentAssignedLicense,
+        normalizeEmail,
+      } = await import('./commissionEngine.mjs');
+      const emails = new Set();
+      const inspect = (entry) => {
+        if (!entry || String(entry.status || '').toLowerCase() !== 'assigned') return;
+        const email = normalizeEmail(entry.assignedEmail);
+        if (email) emails.add(email);
+      };
+      for (const entry of incomingVault) inspect(entry);
+      if (workspace) {
+        for (const license of dbList(workspace.licenses)) inspect(license);
+      }
+      if (key) inspect(findVaultEntry(merged.vault, key));
+      const now = new Date().toISOString();
+      const workspaces = merged.store?.workspaces || {};
+      for (const email of emails) {
+        const assigned = findAssignedLicenseForEmail(merged.vault, workspaces, email);
+        if (!assigned || !isRecentAssignedLicense(assigned.assignedAt, now)) continue;
+        await tryQualifyCommission({
+          email,
+          source: 'claim',
+          actorId: 'system:license-publish',
+        });
+      }
+    } catch (err) {
+      console.warn('[commission] publish hook failed', err);
+    }
+
     json(res, 200, {
       ok: true,
       key: key || vaultEntries[0]?.key || '',

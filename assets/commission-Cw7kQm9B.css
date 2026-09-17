@@ -1,4 +1,8 @@
-.commission-page{display:grid;gap:14px;padding-bottom:28px}
+.commission-page{display:grid;gap:14px;padding-bottom:28px;overflow-x:hidden;max-width:100%;min-width:0}
+.commission-page .btn,.commission-page button,.commission-page input,.commission-page select,.commission-page textarea{font-size:16px!important;touch-action:manipulation;-webkit-text-size-adjust:100%}
+.commission-page .btn:active,.commission-page button:active{transform:none}
+.commission-page .stat-grid,.commission-page .admin-stat-grid{width:100%;max-width:100%;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr))}
+.commission-page .stat-grid>*,.commission-page .admin-stat-grid>*{min-width:0}
 .commission-kicker{margin:0;font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--electric)}
 .commission-title{margin:4px 0 0;font-family:var(--font-display);font-size:22px;letter-spacing:.04em}
 .commission-lead{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.55}
@@ -17,9 +21,9 @@
 .commission-steps strong{color:var(--text)}
 .commission-empty{margin:0;padding:18px 8px;text-align:center;color:var(--muted)}
 .commission-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.commission-actions{display:flex;flex-wrap:wrap;gap:8px}
+.commission-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
 .commission-chip-row{display:flex;flex-wrap:wrap;gap:8px}
-.commission-chip{border:1px solid rgba(59,130,246,.35);background:rgba(8,14,28,.72);color:var(--text);border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer}
+.commission-chip{border:1px solid rgba(59,130,246,.35);background:rgba(8,14,28,.72);color:var(--text);border-radius:999px;padding:7px 12px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation}
 .commission-chip.is-on{background:linear-gradient(135deg,#2563eb,#0ea5e9);border-color:transparent;color:#fff}
 .commission-rank-list{display:grid;gap:10px}
 .commission-rank-card{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;text-align:left;width:100%;border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:16px;padding:14px;color:inherit;box-shadow:0 0 18px rgba(37,99,235,.12)}
@@ -37,4 +41,5 @@
   .commission-table-wrap{overflow:auto}
   .commission-table{min-width:640px}
   .commission-rank-grid{grid-template-columns:1fr}
+  .commission-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
