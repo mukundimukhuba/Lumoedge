@@ -845,11 +845,11 @@ export default async function handler(req, res) {
 
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
-      const MT5_API_BASE = (
-        process.env.MT5_API_BASE || 'http://66.23.225.158'
-      ).replace(/\/$/, '');
-      const targetPath = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
-      const targetUrl = `${MT5_API_BASE}${targetPath}${url.search}`;
+      const { mt5ApiBase, rewriteMt5Path } = await import('./_lib/mt5Bridge.mjs');
+      const MT5_API_BASE = mt5ApiBase();
+      const sliced = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
+      const targetPath = rewriteMt5Path(`${sliced}${url.search || ''}`);
+      const targetUrl = `${MT5_API_BASE}${targetPath}`;
       const method = req.method || 'GET';
       const body =
         method === 'GET' || method === 'HEAD' ? undefined : await readRawBody(req);

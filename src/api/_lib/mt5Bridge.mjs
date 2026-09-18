@@ -1,7 +1,53 @@
 /**
- * MT5 broker bridge — connects through the swagger REST API at 66.23.225.158
+ * MT5 broker bridge — connects through the swagger REST API at 159.203.191.196
  * (ConnectEx / Connect) and proxies account + trade endpoints server-side.
  */
+
+export const DEFAULT_MT5_API_HOST = '159.203.191.196';
+export const DEFAULT_MT5_API_BASE = `http://${DEFAULT_MT5_API_HOST}`;
+
+const PATH_ALIASES = {
+  '/OrderSend': '/OrderSendSafe',
+  '/OrderClose': '/OrderCloseSafe',
+  '/OrderModify': '/OrderModifySafe',
+};
+
+const OPERATION_CODES = {
+  buy: '0',
+  sell: '1',
+  buylimit: '2',
+  selllimit: '3',
+  buystop: '4',
+  sellstop: '5',
+  buystoplimit: '6',
+  sellstoplimit: '7',
+};
+
+export function mapMt5Operation(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return raw;
+  if (/^\d+$/.test(raw)) return raw;
+  return OPERATION_CODES[raw.toLowerCase()] || raw;
+}
+
+export function rewriteMt5Path(targetPath) {
+  const raw = String(targetPath || '');
+  const qIndex = raw.indexOf('?');
+  const path = qIndex >= 0 ? raw.slice(0, qIndex) : raw;
+  const query = qIndex >= 0 ? raw.slice(qIndex + 1) : '';
+  const mapped = PATH_ALIASES[path] || path;
+  if (!query) return mapped;
+  const params = new URLSearchParams(query);
+  if (params.has('operation')) {
+    params.set('operation', mapMt5Operation(params.get('operation')));
+  }
+  const qs = params.toString();
+  return qs ? `${mapped}?${qs}` : mapped;
+}
+
+function envMt5Base() {
+  return String(process.env.MT5_API_BASE || process.env.mt5_api_base || '').replace(/\/$/, '');
+}
 
 const BROKER_TERMINALS = [
   { server: 'razormarkets-live', terminalUrl: 'https://webtrader.razormarkets.co.za/terminal' },
@@ -46,11 +92,16 @@ export function parseTerminalEndpoint(terminalUrl) {
 }
 
 function mt5Bases() {
-  const host = (process.env.MT5_API_HOST || '66.23.225.158').trim();
-  const envBase = String(process.env.MT5_API_BASE || '').replace(/\/$/, '');
-  return [...(envBase ? [envBase] : []), `https://${host}`, `http://${host}`].filter(
+  const host = (process.env.MT5_API_HOST || DEFAULT_MT5_API_HOST).trim();
+  const envBase = envMt5Base();
+  // HTTP first — this host does not serve HTTPS and TLS handshakes hang.
+  return [...(envBase ? [envBase] : []), `http://${host}`].filter(
     (b, i, arr) => arr.indexOf(b) === i,
   );
+}
+
+export function mt5ApiBase() {
+  return mt5Bases()[0] || DEFAULT_MT5_API_BASE;
 }
 
 async function readUpstreamText(res) {
@@ -60,6 +111,7 @@ async function readUpstreamText(res) {
     const parsed = JSON.parse(text);
     if (typeof parsed === 'string') return parsed.trim();
     if (parsed && typeof parsed === 'object') {
+      if (parsed.ticket != null && parsed.ticket !== '') return String(parsed.ticket).trim();
       if (typeof parsed.token === 'string') return parsed.token.trim();
       if (typeof parsed.id === 'string') return parsed.id.trim();
     }
@@ -71,8 +123,9 @@ async function readUpstreamText(res) {
 
 async function mt5Request(targetPath, timeoutMs = 12000) {
   let lastErr = 'MT5 bridge unreachable';
+  const path = rewriteMt5Path(targetPath);
   for (const base of mt5Bases()) {
-    const targetUrl = `${base}${targetPath}`;
+    const targetUrl = `${base}${path}`;
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     try {
@@ -83,7 +136,7 @@ async function mt5Request(targetPath, timeoutMs = 12000) {
       });
       clearTimeout(timer);
       const body = await readUpstreamText(upstream);
-      if (upstream.ok && body && !/error|fail|invalid/i.test(body)) {
+      if (upstream.status === 200 && body && !/error|fail|invalid/i.test(body)) {
         return { ok: true, token: body.replace(/^"|"$/g, ''), status: upstream.status };
       }
       lastErr = body || `Connect failed (${upstream.status})`;
