@@ -889,27 +889,18 @@ export default async function handler(req, res) {
       const {
         ensureBrokerCatalog,
         filterCatalog,
-        brokersFromFirebase,
+        liveSearchCompanies,
       } = await import('./_lib/brokers.mjs');
       const { firebaseRead, firebaseWrite } = await import('./_lib/clientMerge.mjs');
       const q = String(url.searchParams.get('q') || '').trim();
       const live = String(url.searchParams.get('live') || '') === '1';
       const catalog = await ensureBrokerCatalog(firebaseRead, firebaseWrite);
-      let brokers = filterCatalog(catalog, q);
-      if (live && q) {
-        // Keep catalog hits; live search enrichment happens client-side when needed
-        const fb = brokersFromFirebase(await firebaseRead('lumo/brokers'));
-        const extra = filterCatalog(fb, q);
-        const seen = new Set(brokers.map((b) => String(b.id || b.company || '').toLowerCase()));
-        for (const b of extra) {
-          const id = String(b.id || b.company || '').toLowerCase();
-          if (!seen.has(id)) {
-            brokers.push(b);
-            seen.add(id);
-          }
-        }
+      const brokers = filterCatalog(catalog, q);
+      let companies = [];
+      if (live && q.length >= 2) {
+        companies = await liveSearchCompanies(q, catalog);
       }
-      send(res, 200, { ok: true, brokers });
+      send(res, 200, { ok: true, brokers, companies });
       return;
     }
 
