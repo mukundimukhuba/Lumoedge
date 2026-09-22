@@ -380,7 +380,21 @@ export async function liveSearchCompanies(query, catalog = [], fetchFn = fetch) 
   } catch {
     raw = [];
   }
-  return mergeBrokerCompanies(mapLiveSearchCompanies(raw, catalog), catalogHits);
+  return mergeBrokerCompanies(mapLiveSearchCompanies(raw, catalog), catalogHits)
+    .sort((a, b) => {
+      const rank = (name) => {
+        const c = companyKey(name);
+        const n = companyKey(q);
+        if (!n) return 50;
+        if (c === n) return 0;
+        if (c.startsWith(`${n} `) || c.startsWith(`${n}(`) || c.startsWith(n)) return 1;
+        if (c.includes(` ${n}`) || c.includes(`(${n}`)) return 2;
+        if (c.includes(n)) return 3;
+        return 8;
+      };
+      const diff = rank(a.company) - rank(b.company);
+      return diff || String(a.company).localeCompare(String(b.company));
+    });
 }
 
 /** Infer MT4/MT5 from a server name. */

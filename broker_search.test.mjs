@@ -60,6 +60,23 @@ test('merge keeps live servers and does not drop non-Razor companies', () => {
   assert.ok(merged.some((row) => /razor/i.test(row.company)));
 });
 
+test('XM search ranks XM companies ahead of substring noise', async () => {
+  const fetchFn = async () => ({
+    ok: true,
+    async json() {
+      return [
+        { companyName: 'Assexmarkets Global Limited', results: [{ name: 'Assex-MT5' }] },
+        { companyName: 'CXM Direct LLC', results: [{ name: 'CXM-Live' }] },
+        { companyName: 'XM Global Limited', results: [{ name: 'XMGlobal-MT5' }] },
+        { companyName: 'XM ZA (Pty) Ltd', results: [{ name: 'XMZA-MT5' }] },
+      ];
+    },
+  });
+  const rows = await liveSearchCompanies('XM', catalog, fetchFn);
+  assert.equal(rows[0].company.startsWith('XM'), true);
+  assert.equal(rows[1].company.startsWith('XM'), true);
+});
+
 test('liveSearchCompanies uses upstream Search for any query', async () => {
   const fetchFn = async (url) => {
     assert.match(url, /\/Search\?company=ICMarkets/);
@@ -79,3 +96,4 @@ test('liveSearchCompanies uses upstream Search for any query', async () => {
   assert.ok(rows.some((row) => row.company === 'Raw Trading Ltd'));
   assert.ok(rows.some((row) => row.results.some((s) => s.name === 'ICMarketsSC-MT5')));
 });
+
