@@ -3,7 +3,11 @@ import { test } from 'node:test';
 import {
   connectMt5Broker,
   DEFAULT_MT5_API_BASE,
+  enrichOrderSendPath,
+  extractMt5Ticket,
   mapMt5Operation,
+  mt5ProxyStatus,
+  priceForOperation,
   rewriteMt5Path,
 } from './api/_lib/mt5Bridge.mjs';
 import { handleApi } from './api/_lib/handlers.mjs';
@@ -51,4 +55,38 @@ test('new MT5 host keeps the old Lumo routes working', () => {
   );
   assert.equal(rewriteMt5Path('/CheckConnect?id=abc'), '/CheckConnect?id=abc');
   assert.equal(rewriteMt5Path('/OrderClose?id=abc&ticket=1'), '/OrderCloseSafe?id=abc&ticket=1');
+});
+
+test('201 ExceptionResult is a failed trade, not a sent order', () => {
+  const body = JSON.stringify({
+    message: 'Trade is disabled',
+    code: 'TRADE_DISABLED',
+    stackTrace: null,
+  });
+  assert.equal(mt5ProxyStatus(201, body), 400);
+  assert.equal(mt5ProxyStatus(200, '{"ticket":123}'), 200);
+  assert.equal(extractMt5Ticket({ ticket: 884512 }), '884512');
+  assert.equal(extractMt5Ticket({ message: 'INVALID_TOKEN', code: 'INVALID_TOKEN' }), '');
+  assert.equal(extractMt5Ticket('0'), '');
+});
+
+test('OrderSend without price is filled from the live quote', async () => {
+  const fetchFn = async (url) => {
+    assert.match(url, /\/GetQuote\?/);
+    return {
+      status: 200,
+      async json() {
+        return { symbol: 'XAUUSD', bid: 2340.1, ask: 2340.4 };
+      },
+    };
+  };
+  const buy = await enrichOrderSendPath(
+    '/OrderSend?id=tok&symbol=XAUUSD&operation=Buy&volume=0.01',
+    fetchFn,
+  );
+  assert.match(buy, /^\/OrderSendSafe\?/);
+  assert.match(buy, /operation=0/);
+  assert.match(buy, /price=2340\.4/);
+  const sellPx = priceForOperation({ bid: 10.2, ask: 10.4 }, 'Sell');
+  assert.equal(sellPx, 10.2);
 });

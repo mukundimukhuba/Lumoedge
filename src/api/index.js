@@ -845,10 +845,12 @@ export default async function handler(req, res) {
 
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
-      const { mt5ApiBase, rewriteMt5Path } = await import('./_lib/mt5Bridge.mjs');
+      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus } = await import(
+        './_lib/mt5Bridge.mjs'
+      );
       const MT5_API_BASE = mt5ApiBase();
       const sliced = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
-      const targetPath = rewriteMt5Path(`${sliced}${url.search || ''}`);
+      const targetPath = await enrichOrderSendPath(`${sliced}${url.search || ''}`);
       const targetUrl = `${MT5_API_BASE}${targetPath}`;
       const method = req.method || 'GET';
       const body =
@@ -867,7 +869,7 @@ export default async function handler(req, res) {
         });
         const buf = Buffer.from(await upstream.arrayBuffer());
         const ct = upstream.headers.get('content-type') || 'application/json';
-        res.statusCode = upstream.status;
+        res.statusCode = mt5ProxyStatus(upstream.status, buf.toString('utf8'));
         res.setHeader('Content-Type', ct);
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Access-Control-Allow-Origin', '*');

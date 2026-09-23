@@ -45,6 +45,108 @@ export function rewriteMt5Path(targetPath) {
   return qs ? `${mapped}?${qs}` : mapped;
 }
 
+export function priceForOperation(quote, operation) {
+  const op = mapMt5Operation(operation);
+  const bid = Number(quote?.bid);
+  const ask = Number(quote?.ask);
+  const last = Number(quote?.last);
+  const sell = op === '1' || op === '3' || op === '5' || op === '7';
+  const px = sell ? bid : ask;
+  if (Number.isFinite(px) && px > 0) return px;
+  if (Number.isFinite(last) && last > 0) return last;
+  return 0;
+}
+
+export function extractMt5Ticket(payload) {
+  if (payload == null) return '';
+  let value = payload;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^[1-9]\d*$/.test(text)) return text;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      return '';
+    }
+  }
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return String(Math.trunc(value));
+  }
+  if (value && typeof value === 'object') {
+    const ticket = value.ticket ?? value.Ticket ?? value.order ?? value.Order;
+    if (ticket != null && ticket !== '' && Number(ticket) > 0) return String(ticket);
+  }
+  return '';
+}
+
+export function mt5ExceptionMessage(payload) {
+  if (!payload) return '';
+  if (typeof payload === 'string') {
+    const text = payload.trim();
+    try {
+      return mt5ExceptionMessage(JSON.parse(text)) || text;
+    } catch {
+      return text;
+    }
+  }
+  if (typeof payload === 'object') {
+    return String(payload.message || payload.error || payload.code || '').trim();
+  }
+  return '';
+}
+
+/** New mt5rest uses HTTP 201 for ExceptionResult — that is a failed trade, not success. */
+export function mt5ProxyStatus(upstreamStatus, bodyText) {
+  const status = Number(upstreamStatus);
+  if (status !== 201) return status;
+  const text = String(bodyText || '');
+  if (!text) return 400;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && (parsed.code != null || parsed.message)) {
+      return 400;
+    }
+  } catch {
+    return 400;
+  }
+  return 400;
+}
+
+export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
+  const rewritten = rewriteMt5Path(targetPath);
+  const qIndex = rewritten.indexOf('?');
+  const path = qIndex >= 0 ? rewritten.slice(0, qIndex) : rewritten;
+  const params = new URLSearchParams(qIndex >= 0 ? rewritten.slice(qIndex + 1) : '');
+  if (!/^\/OrderSendSafe$/i.test(path)) return rewritten;
+
+  const existing = Number(params.get('price'));
+  if (!(existing > 0)) {
+    const id = String(params.get('id') || '').trim();
+    const symbol = String(params.get('symbol') || '').trim();
+    if (id && symbol) {
+      try {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 8000);
+        const res = await fetchFn(
+          `${mt5ApiBase()}/GetQuote?id=${encodeURIComponent(id)}&symbol=${encodeURIComponent(symbol)}&msNotOlder=0`,
+          { method: 'GET', headers: { Accept: 'application/json' }, signal: ac.signal },
+        );
+        clearTimeout(timer);
+        if (res.status === 200) {
+          const quote = await res.json();
+          const price = priceForOperation(quote, params.get('operation'));
+          if (price > 0) params.set('price', String(price));
+        }
+      } catch {
+        // Instant-execution brokers need a price; market-execution can still send without one.
+      }
+    }
+  }
+  if (!params.get('slippage')) params.set('slippage', '100');
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
 function envMt5Base() {
   return String(process.env.MT5_API_BASE || process.env.mt5_api_base || '').replace(/\/$/, '');
 }
@@ -123,7 +225,7 @@ async function readUpstreamText(res) {
 
 async function mt5Request(targetPath, timeoutMs = 12000) {
   let lastErr = 'MT5 bridge unreachable';
-  const path = rewriteMt5Path(targetPath);
+  const path = await enrichOrderSendPath(targetPath);
   for (const base of mt5Bases()) {
     const targetUrl = `${base}${path}`;
     const ac = new AbortController();
@@ -236,6 +338,10 @@ export async function sendMt5MarketOrder(input) {
   if (takeProfit) params.set('takeprofit', String(takeProfit));
 
   const result = await mt5Request(`/OrderSend?${params.toString()}`, 20000);
-  if (!result.ok) return { ok: false, error: result.error || 'OrderSend failed' };
-  return { ok: true, ticket: String(result.token || '').trim(), raw: result.token };
+  if (!result.ok) return { ok: false, error: mt5ExceptionMessage(result.error) || result.error || 'OrderSend failed' };
+  const ticket = extractMt5Ticket(result.token);
+  if (!ticket) {
+    return { ok: false, error: mt5ExceptionMessage(result.token) || 'Broker did not open the order' };
+  }
+  return { ok: true, ticket, raw: result.token };
 }
