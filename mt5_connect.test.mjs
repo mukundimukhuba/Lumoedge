@@ -7,7 +7,9 @@ import {
   extractMt5Ticket,
   mapMt5Operation,
   mt5ProxyStatus,
+  parseMt5SymbolNames,
   priceForOperation,
+  resolveBrokerSymbol,
   rewriteMt5Path,
 } from './api/_lib/mt5Bridge.mjs';
 import { handleApi } from './api/_lib/handlers.mjs';
@@ -72,6 +74,14 @@ test('201 ExceptionResult is a failed trade, not a sent order', () => {
 
 test('OrderSend without price is filled from the live quote', async () => {
   const fetchFn = async (url) => {
+    if (/\/SymbolList\?/.test(url) || /\/Symbols\?/.test(url)) {
+      return {
+        status: 200,
+        async json() {
+          return { XAUUSD: { currency: 'USD', digits: 2, description: 'Gold' } };
+        },
+      };
+    }
     assert.match(url, /\/GetQuote\?/);
     return {
       status: 200,
@@ -89,4 +99,50 @@ test('OrderSend without price is filled from the live quote', async () => {
   assert.match(buy, /price=2340\.4/);
   const sellPx = priceForOperation({ bid: 10.2, ask: 10.4 }, 'Sell');
   assert.equal(sellPx, 10.2);
+});
+
+test('Symbols object map uses keys, never currency', () => {
+  const names = parseMt5SymbolNames({
+    XAUUSD: { currency: 'USD', digits: 2, description: 'Gold' },
+    EURUSD: { currency: 'USD', digits: 5 },
+    XAUUSD_m: { currency: 'USD', digits: 2, id: 17 },
+  });
+  assert.deepEqual(names, ['XAUUSD', 'EURUSD', 'XAUUSD_m']);
+  assert.equal(
+    parseMt5SymbolNames({ names: ['XAUUSD.m', 'EURUSD'], infos: { 'XAUUSD.m': { currency: 'USD' } } }).includes(
+      'XAUUSD.m',
+    ),
+    true,
+  );
+  assert.deepEqual(parseMt5SymbolNames(['EURUSD', { symbol: 'GBPUSD', currency: 'USD' }]), ['EURUSD', 'GBPUSD']);
+});
+
+test('XAUUSDm maps to the broker gold symbol that actually exists', () => {
+  assert.equal(resolveBrokerSymbol('XAUUSDm', ['XAUUSD.m', 'EURUSD']), 'XAUUSD.m');
+  assert.equal(resolveBrokerSymbol('XAUUSDm', ['XAUUSD', 'EURUSD']), 'XAUUSD');
+  assert.equal(resolveBrokerSymbol('XAUUSDm', ['GOLD', 'EURUSD']), 'GOLD');
+  assert.equal(resolveBrokerSymbol('XAUUSDm', ['XAUUSDm', 'XAUUSD']), 'XAUUSDm');
+  assert.equal(resolveBrokerSymbol('XAUUSD', ['XAUUSDm', 'EURUSD']), 'XAUUSDm');
+});
+
+test('OrderSend remaps XAUUSDm before GetQuote', async () => {
+  const seen = [];
+  const fetchFn = async (url) => {
+    seen.push(url);
+    if (/\/SymbolList\?/.test(url)) {
+      return { status: 200, async json() { return ['XAUUSD.m', 'EURUSD']; } };
+    }
+    if (/\/GetQuote\?/.test(url)) {
+      assert.match(url, /symbol=XAUUSD\.m/);
+      return { status: 200, async json() { return { bid: 2340.1, ask: 2340.4 }; } };
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const path = await enrichOrderSendPath(
+    '/OrderSend?id=tok&symbol=XAUUSDm&operation=Buy&volume=0.01',
+    fetchFn,
+  );
+  assert.match(path, /symbol=XAUUSD\.m/);
+  assert.match(path, /price=2340\.4/);
+  assert.equal(seen.some((url) => /\/GetQuote\?/.test(url) && /XAUUSDm/.test(url)), false);
 });

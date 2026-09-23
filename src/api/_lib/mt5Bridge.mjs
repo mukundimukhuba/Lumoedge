@@ -112,6 +112,309 @@ export function mt5ProxyStatus(upstreamStatus, bodyText) {
   return 400;
 }
 
+const SYMBOL_WRAPPER_KEYS = new Set([
+  'base',
+  'symGroups',
+  'sessions',
+  'groups',
+  'infos',
+  'infosById',
+  'names',
+  'symbols',
+  'groupNames',
+  'comissions',
+  'commissions',
+]);
+
+const SYMBOL_SUFFIXES = [
+  '',
+  '.M',
+  '.m',
+  'm',
+  '.PRO',
+  '.pro',
+  '.STD',
+  '.std',
+  '.R',
+  '.r',
+  '.ECN',
+  '.RAW',
+  '.I',
+  '.SB',
+  '.micro',
+  '.MICRO',
+  '.mini',
+  '.MINI',
+  '#',
+];
+
+const SYMBOL_ALIAS_GROUPS = [
+  ['XAUUSD', 'GOLD', 'XAUUSDM', 'XAUUSD.M', 'XAUUSD.MICRO', 'GOLD.M', 'XAUUSD.C'],
+  ['XAGUSD', 'SILVER', 'XAGUSDM', 'XAGUSD.M', 'SILVER.M'],
+  ['BTCUSD', 'BITCOIN', 'BTCUSDM', 'BTCUSD.M'],
+  ['ETHUSD', 'ETHEREUM', 'ETHUSDM', 'ETHUSD.M'],
+  ['US30', 'DJ30', 'WALLSTREET30', 'WS30'],
+  ['NAS100', 'USTEC', 'NASDAQ', 'NAS100.M', 'USTEC.M'],
+];
+
+export function compactMt5Symbol(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+export function stripBrokerSymbolSuffix(value) {
+  return String(value || '')
+    .toUpperCase()
+    .trim()
+    .replace(/[#._-]?(MICRO|MINI|PRO|STD|ECN|RAW|SB|[MICR])$/i, '');
+}
+
+function addUniqueName(names, seen, value) {
+  const name = String(value || '').trim();
+  if (!name || seen.has(name)) return;
+  seen.add(name);
+  names.push(name);
+}
+
+function symbolNameFromItem(item) {
+  if (typeof item === 'string') return item.trim();
+  if (!item || typeof item !== 'object') return '';
+  // SymbolInfo uses `currency` for USD/EUR — never treat that as the instrument name.
+  return String(item.symbol || item.name || item.Symbol || item.Name || '').trim();
+}
+
+function looksLikeSymbolInfo(value) {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      ('currency' in value ||
+        'digits' in value ||
+        'description' in value ||
+        'points' in value ||
+        'profitCurrency' in value),
+  );
+}
+
+/** /Symbols is a SymbolInfo map keyed by name, or {names, infos}. Never prefer currency. */
+export function parseMt5SymbolNames(payload) {
+  if (payload == null) return [];
+  if (typeof payload === 'string') {
+    const text = payload.trim();
+    if (!text) return [];
+    try {
+      return parseMt5SymbolNames(JSON.parse(text));
+    } catch {
+      return [text];
+    }
+  }
+
+  const names = [];
+  const seen = new Set();
+
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      addUniqueName(names, seen, typeof item === 'string' ? item : symbolNameFromItem(item));
+    }
+    return names;
+  }
+
+  if (typeof payload !== 'object') return [];
+
+  if (Array.isArray(payload.names)) {
+    for (const item of payload.names) addUniqueName(names, seen, item);
+  }
+  if (Array.isArray(payload.symbols)) {
+    for (const item of payload.symbols) {
+      addUniqueName(names, seen, typeof item === 'string' ? item : symbolNameFromItem(item));
+    }
+  }
+  if (payload.infos && typeof payload.infos === 'object' && !Array.isArray(payload.infos)) {
+    for (const key of Object.keys(payload.infos)) addUniqueName(names, seen, key);
+  }
+
+  const keys = Object.keys(payload);
+  const infoMap =
+    keys.length > 0 &&
+    keys.every((key) => SYMBOL_WRAPPER_KEYS.has(key) || looksLikeSymbolInfo(payload[key]));
+  if (infoMap) {
+    for (const key of keys) {
+      if (!SYMBOL_WRAPPER_KEYS.has(key) && looksLikeSymbolInfo(payload[key])) {
+        addUniqueName(names, seen, key);
+      }
+    }
+  }
+
+  return names;
+}
+
+function keysForSymbol(value) {
+  const upper = String(value || '').toUpperCase().trim();
+  if (!upper) return [];
+  return [upper, compactMt5Symbol(upper), stripBrokerSymbolSuffix(upper)];
+}
+
+function sameAliasGroup(candidate, detected) {
+  const candKeys = keysForSymbol(candidate);
+  const detKeys = keysForSymbol(detected);
+  for (const group of SYMBOL_ALIAS_GROUPS) {
+    const compactGroup = group.map((item) => compactMt5Symbol(item));
+    const candHit = candKeys.some((value) => group.includes(value) || compactGroup.includes(value));
+    const detHit = detKeys.some((value) => group.includes(value) || compactGroup.includes(value));
+    if (candHit && detHit) return true;
+  }
+  return false;
+}
+
+function scoreBrokerSymbol(candidate, detectedUpper, detectedCompact, detectedBase) {
+  const upper = String(candidate || '').toUpperCase();
+  const compact = compactMt5Symbol(candidate);
+  let score = 0;
+  if (upper === detectedUpper) score += 100;
+  if (compact === detectedCompact) score += 80;
+  if (upper === detectedBase) score += 60;
+  if (compact === compactMt5Symbol(detectedBase)) score += 50;
+  if (sameAliasGroup(candidate, detectedUpper) || sameAliasGroup(candidate, detectedBase)) score += 40;
+  if (/M$/.test(detectedCompact) && /M$/.test(compact)) score += 25;
+  if (/M$/.test(detectedCompact) && !/M$/.test(compact) && compact === compactMt5Symbol(detectedBase)) {
+    score -= 5;
+  }
+  if (upper.startsWith(detectedBase)) score += 15;
+  if (compact.startsWith(compactMt5Symbol(detectedBase))) score += 10;
+  return score;
+}
+
+/** Map chart text like XAUUSDm onto the broker's real name (XAUUSD.m / XAUUSD / GOLD). */
+export function resolveBrokerSymbol(detected, brokerNames) {
+  const raw = String(detected || '').trim();
+  if (!raw) return null;
+  const names = (brokerNames || []).map((item) => String(item || '').trim()).filter(Boolean);
+  if (!names.length) return raw;
+
+  const detectedUpper = raw.toUpperCase();
+  const detectedCompact = compactMt5Symbol(raw);
+  const detectedBase = stripBrokerSymbolSuffix(raw);
+  const byUpper = new Map(names.map((name) => [name.toUpperCase(), name]));
+  const byCompact = new Map();
+  for (const name of names) {
+    const compact = compactMt5Symbol(name);
+    if (compact && !byCompact.has(compact)) byCompact.set(compact, name);
+  }
+
+  if (byUpper.has(detectedUpper)) return byUpper.get(detectedUpper);
+  if (byCompact.has(detectedCompact)) return byCompact.get(detectedCompact);
+
+  const candidates = new Set([detectedUpper, detectedBase, detectedCompact, compactMt5Symbol(detectedBase)]);
+  for (const group of SYMBOL_ALIAS_GROUPS) {
+    if (group.includes(detectedUpper) || group.includes(detectedBase) || group.includes(detectedCompact)) {
+      for (const alias of group) candidates.add(alias);
+    }
+  }
+  for (const seed of [...candidates]) {
+    for (const suffix of SYMBOL_SUFFIXES) {
+      candidates.add(`${seed}${suffix}`.toUpperCase());
+      candidates.add(compactMt5Symbol(`${seed}${suffix}`));
+    }
+  }
+
+  const hits = [];
+  const hitSeen = new Set();
+  const consider = (name) => {
+    if (!name || hitSeen.has(name)) return;
+    hitSeen.add(name);
+    hits.push(name);
+  };
+  for (const candidate of candidates) {
+    consider(byUpper.get(candidate));
+    consider(byCompact.get(candidate));
+  }
+  if (!hits.length) {
+    for (const name of names) {
+      const upper = name.toUpperCase();
+      const compact = compactMt5Symbol(name);
+      if (
+        upper === detectedBase ||
+        compact === compactMt5Symbol(detectedBase) ||
+        upper.includes(detectedBase) ||
+        detectedBase.includes(compact)
+      ) {
+        consider(name);
+      }
+    }
+  }
+  if (!hits.length) return null;
+
+  const scored = hits
+    .map((name) => ({
+      name,
+      score: scoreBrokerSymbol(name, detectedUpper, detectedCompact, detectedBase),
+    }))
+    .sort((a, b) => b.score - a.score);
+  if (scored[0].score <= 0) return null;
+  if (scored.length === 1 || scored[0].score > scored[1].score) return scored[0].name;
+  if (scored[0].score >= 50) return scored[0].name;
+  return null;
+}
+
+export function brokerSymbolCandidates(detected, brokerNames) {
+  const names = (brokerNames || []).map((item) => String(item || '').trim()).filter(Boolean);
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const name = String(value || '').trim();
+    if (!name) return;
+    const key = name.toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  };
+  add(resolveBrokerSymbol(detected, names));
+  add(detected);
+  const compact = compactMt5Symbol(detected);
+  for (const name of names) {
+    if (compactMt5Symbol(name) === compact) add(name);
+  }
+  return out;
+}
+
+async function fetchMt5Json(fetchFn, path) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  try {
+    const res = await fetchFn(`${mt5ApiBase()}${path}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (res.status !== 200) return null;
+    if (typeof res.json === 'function') return await res.json();
+    return null;
+  } catch {
+    clearTimeout(timer);
+    return null;
+  }
+}
+
+export async function loadBrokerSymbolNames(id, fetchFn = fetch) {
+  const token = String(id || '').trim();
+  if (!token) return [];
+  const encoded = encodeURIComponent(token);
+  const list = parseMt5SymbolNames(await fetchMt5Json(fetchFn, `/SymbolList?id=${encoded}`));
+  if (list.length) return list;
+  return parseMt5SymbolNames(await fetchMt5Json(fetchFn, `/Symbols?id=${encoded}`));
+}
+
+async function quoteForSymbol(fetchFn, id, symbol, operation) {
+  const res = await fetchMt5Json(
+    fetchFn,
+    `/GetQuote?id=${encodeURIComponent(id)}&symbol=${encodeURIComponent(symbol)}&msNotOlder=0`,
+  );
+  if (!res || typeof res !== 'object') return 0;
+  return priceForOperation(res, operation);
+}
+
 export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
   const rewritten = rewriteMt5Path(targetPath);
   const qIndex = rewritten.indexOf('?');
@@ -119,29 +422,37 @@ export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
   const params = new URLSearchParams(qIndex >= 0 ? rewritten.slice(qIndex + 1) : '');
   if (!/^\/OrderSendSafe$/i.test(path)) return rewritten;
 
-  const existing = Number(params.get('price'));
-  if (!(existing > 0)) {
-    const id = String(params.get('id') || '').trim();
-    const symbol = String(params.get('symbol') || '').trim();
-    if (id && symbol) {
-      try {
-        const ac = new AbortController();
-        const timer = setTimeout(() => ac.abort(), 8000);
-        const res = await fetchFn(
-          `${mt5ApiBase()}/GetQuote?id=${encodeURIComponent(id)}&symbol=${encodeURIComponent(symbol)}&msNotOlder=0`,
-          { method: 'GET', headers: { Accept: 'application/json' }, signal: ac.signal },
-        );
-        clearTimeout(timer);
-        if (res.status === 200) {
-          const quote = await res.json();
-          const price = priceForOperation(quote, params.get('operation'));
-          if (price > 0) params.set('price', String(price));
-        }
-      } catch {
-        // Instant-execution brokers need a price; market-execution can still send without one.
-      }
+  const id = String(params.get('id') || '').trim();
+  const requested = String(params.get('symbol') || '').trim();
+  if (id && requested) {
+    let names = [];
+    try {
+      names = await loadBrokerSymbolNames(id, fetchFn);
+    } catch {
+      names = [];
     }
+    const candidates = brokerSymbolCandidates(requested, names);
+    let resolved = candidates[0] || requested;
+    const existing = Number(params.get('price'));
+    if (!(existing > 0)) {
+      for (const symbol of candidates.length ? candidates : [requested]) {
+        try {
+          const price = await quoteForSymbol(fetchFn, id, symbol, params.get('operation'));
+          if (price > 0) {
+            params.set('price', String(price));
+            resolved = symbol;
+            break;
+          }
+        } catch {
+          // Instant-execution brokers need a price; market-execution can still send without one.
+        }
+      }
+    } else if (candidates[0]) {
+      resolved = candidates[0];
+    }
+    if (resolved) params.set('symbol', resolved);
   }
+
   if (!params.get('slippage')) params.set('slippage', '100');
   const qs = params.toString();
   return qs ? `${path}?${qs}` : path;
