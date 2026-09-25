@@ -16,7 +16,8 @@ import {
 } from './api/_lib/passwordReset.mjs';
 import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail } from './api/_lib/email/messages.mjs';
 import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
-import { sendLumoEmail } from './api/_lib/email/send.mjs';
+import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
+import { buildMime, encodeSubject } from './api/_lib/email/smtp.mjs';
 import { listEmailLogs } from './api/_lib/email/log.mjs';
 
 function createIo(admins = []) {
@@ -129,9 +130,33 @@ test('password reset codes are hashed, single-use, and expire', async () => {
   assert.equal(again.ok, false);
 });
 
+test('Brevo key shape is classified without exposing the secret', () => {
+  const api = describeSecret(`  "xkeysib-${'ab'.repeat(40)}"  `);
+  assert.equal(api.kind, 'api');
+  assert.equal(api.prefix, 'xkeysib-');
+  assert.equal(api.truncated, false);
+  assert.equal(Object.hasOwn(api, 'apiKey'), false);
+  const smtp = describeSecret(`xsmtpsib-${'cd'.repeat(40)}`);
+  assert.equal(smtp.kind, 'smtp');
+  assert.equal(smtp.truncated, false);
+  const short = describeSecret(`xsmtpsib-${'e'.repeat(20)}`);
+  assert.equal(short.kind, 'smtp');
+  assert.equal(short.truncated, true);
+  const mime = buildMime({
+    fromName: 'Lumo Edge',
+    fromEmail: 'lumoedge08@gmail.com',
+    to: 'mukundimukhuba8@gmail.com',
+    subject: 'Lumo Edge email test',
+    html: '<p>Hi</p>',
+    text: 'Hi',
+  });
+  assert.match(mime, /Subject: Lumo Edge email test/);
+  assert.match(encodeSubject('Lumo — test'), /UTF-8/);
+});
+
 test('Brevo failure does not throw from sendLumoEmail', async () => {
   const prev = process.env.BREVO_API_KEY;
-  process.env.BREVO_API_KEY = 'xkeysib-test-invalid';
+  process.env.BREVO_API_KEY = `xkeysib-${'a'.repeat(80)}`;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new Error('network down');
@@ -145,6 +170,51 @@ test('Brevo failure does not throw from sendLumoEmail', async () => {
     });
     assert.equal(result.ok, false);
     assert.match(result.error, /network down/i);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (prev == null) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = prev;
+  }
+});
+
+test('rejected or truncated Brevo keys stay off Resend and never leak credentials', async () => {
+  const prev = process.env.BREVO_API_KEY;
+  const originalFetch = globalThis.fetch;
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return { ok: false, json: async () => ({ message: 'Key not found' }) };
+  };
+  try {
+    process.env.BREVO_API_KEY = 'xsmtpsib-short';
+    const truncated = await sendLumoEmail({
+      to: 'mukundimukhuba8@gmail.com',
+      subject: 'Test',
+      html: '<p>Hi</p>',
+      text: 'Hi',
+    });
+    assert.equal(truncated.ok, false);
+    assert.equal(called, false);
+    assert.match(truncated.error, /incomplete/i);
+
+    process.env.BREVO_API_KEY = `xkeysib-${'b'.repeat(80)}`;
+    process.env.BREVO_SENDER_EMAIL = 'lumoedge08@gmail.com';
+    process.env.BREVO_SENDER_NAME = 'Lumo Edge';
+    const rejected = await sendLumoEmail({
+      to: 'mukundimukhuba8@gmail.com',
+      subject: 'Test',
+      html: '<p>Hi</p>',
+      text: 'Hi',
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.provider, 'brevo');
+    assert.match(rejected.error, /rejected this key/i);
+    const config = await describeEmailConfig();
+    assert.equal(config.provider, 'brevo');
+    assert.equal(config.keyKind, 'api');
+    assert.equal(config.senderName, 'Lumo Edge');
+    assert.equal(config.apiKey, undefined);
+    assert.equal(JSON.stringify(config).includes('xkeysib-bbbb'), false);
   } finally {
     globalThis.fetch = originalFetch;
     if (prev == null) delete process.env.BREVO_API_KEY;

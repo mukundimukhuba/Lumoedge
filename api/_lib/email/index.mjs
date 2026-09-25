@@ -1,4 +1,10 @@
-import { isValidEmail, sendLumoEmail, sendResendEmail, resolveEmailProvider } from './send.mjs';
+import {
+  isValidEmail,
+  sendLumoEmail,
+  sendResendEmail,
+  resolveEmailProvider,
+  describeEmailConfig,
+} from './send.mjs';
 import { listEmailLogs, sendTrackedEmail } from './log.mjs';
 import {
   adminManualEmail,
@@ -14,6 +20,7 @@ export {
   sendLumoEmail,
   sendResendEmail,
   resolveEmailProvider,
+  describeEmailConfig,
   listEmailLogs,
 };
 

@@ -1,12 +1,7 @@
 import { matchSuperPassword, requireSuper, verifyAdminSession } from '../adminSession.mjs';
 import { firebaseRead, firebaseWrite } from '../clientMerge.mjs';
-import {
-  listEmailLogs,
-  notifyAdminManual,
-  resolveAudienceEmails,
-  resolveEmailProvider,
-} from './index.mjs';
-import { isValidEmail } from './send.mjs';
+import { listEmailLogs, notifyAdminManual, resolveAudienceEmails } from './index.mjs';
+import { describeEmailConfig, isValidEmail } from './send.mjs';
 
 const TEST_ALLOWLIST = new Set(['mukundimukhuba8@gmail.com', 'lumoedge08@gmail.com']);
 const testSends = [];
@@ -21,13 +16,8 @@ export async function handleEmailRoutes(req, res, ctx) {
   const path = String(pathname || '').replace(/\/+$/, '') || '/';
 
   if (path === '/api/email/status' && req.method === 'GET') {
-    const resolved = await resolveEmailProvider(firebaseRead);
-    json(res, 200, {
-      ok: true,
-      configured: Boolean(resolved.apiKey),
-      provider: resolved.provider || '',
-      source: resolved.source || '',
-    });
+    const config = await describeEmailConfig(firebaseRead);
+    json(res, 200, { ok: true, ...config });
     return true;
   }
 
@@ -65,6 +55,7 @@ export async function handleEmailRoutes(req, res, ctx) {
     json(res, result.ok ? 200 : 502, {
       ok: Boolean(result.ok),
       provider: result.provider || '',
+      transport: result.transport || '',
       error: result.error || '',
     });
     return true;

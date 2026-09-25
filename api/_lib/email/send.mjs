@@ -1,3 +1,5 @@
+import { sendViaBrevoSmtp } from './smtp.mjs';
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function isValidEmail(raw) {
@@ -9,33 +11,67 @@ export function isValidEmail(raw) {
 
 function cleanKey(raw) {
   return String(raw || '')
+    .replace(/^\uFEFF/, '')
     .trim()
-    .replace(/^["']|["']$/g, '')
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/^(api[-_ ]?key|authorization|bearer|brevo[_ ]?api[_ ]?key)\s*[:=]\s*/i, '')
+    .replace(/[\s\u00A0\u200B\u200C\u200D]+/g, '')
+    .trim();
+}
+
+export function describeSecret(raw) {
+  const key = cleanKey(raw);
+  if (!key) {
+    return { present: false, kind: '', length: 0, prefix: '', truncated: false };
+  }
+  let kind = 'unknown';
+  if (key.startsWith('xkeysib-')) kind = 'api';
+  else if (key.startsWith('xsmtpsib-')) kind = 'smtp';
+  else if (key.startsWith('re_')) kind = 'resend';
+  const masked = /[•*]|\.{3}|…/u.test(key);
+  return {
+    present: true,
+    kind,
+    length: key.length,
+    prefix: key.slice(0, 8),
+    truncated: masked || key.length < 64,
+  };
+}
+
+function cleanEnv(raw) {
+  return String(raw || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
     .trim();
 }
 
 function env(name) {
-  const direct = cleanKey(process.env[name]);
+  const direct = cleanEnv(process.env[name]);
   if (direct) return direct;
   const wanted = String(name || '').toLowerCase();
   for (const [key, value] of Object.entries(process.env || {})) {
     if (String(key || '').toLowerCase() === wanted) {
-      const hit = cleanKey(value);
+      const hit = cleanEnv(value);
       if (hit) return hit;
     }
   }
   return '';
 }
 
+function secretEnv(name) {
+  const hit = cleanKey(env(name));
+  return hit;
+}
+
 function scanBrevoApiKeyFromEnv() {
   for (const [key, value] of Object.entries(process.env || {})) {
     const val = cleanKey(value);
     if (!val) continue;
-    if (val.startsWith('xkeysib-')) return val;
+    if (val.startsWith('xkeysib-') || val.startsWith('xsmtpsib-')) return val;
     if (
       /brevo|sendinblue|sendin_blue/i.test(String(key || '')) &&
       val.length > 24 &&
-      !val.startsWith('xsmtpsib-') &&
       !val.startsWith('re_')
     ) {
       return val;
@@ -72,12 +108,13 @@ export function resolveSender() {
 /** Env first, then optional Firebase secret (server-side only). Never log the key. */
 export async function resolveBrevoApiKey(firebaseRead) {
   const fromEnv =
-    env('BREVO_API_KEY') ||
-    env('SENDINBLUE_API_KEY') ||
-    env('BREVO_KEY') ||
-    env('BREVO_API') ||
-    env('brevo') ||
-    env('brevo_api_key') ||
+    secretEnv('BREVO_API_KEY') ||
+    secretEnv('SENDINBLUE_API_KEY') ||
+    secretEnv('BREVO_SMTP_KEY') ||
+    secretEnv('BREVO_KEY') ||
+    secretEnv('BREVO_API') ||
+    secretEnv('brevo') ||
+    secretEnv('brevo_api_key') ||
     scanBrevoApiKeyFromEnv();
   if (fromEnv) return { apiKey: fromEnv, source: 'env' };
   if (typeof firebaseRead === 'function') {
@@ -93,7 +130,8 @@ export async function resolveBrevoApiKey(firebaseRead) {
 }
 
 export async function resolveResendApiKey(firebaseRead) {
-  const fromEnv = env('RESEND_API_KEY') || env('RESEND_KEY') || env('RESEND_TOKEN') || env('resend');
+  const fromEnv =
+    secretEnv('RESEND_API_KEY') || secretEnv('RESEND_KEY') || secretEnv('RESEND_TOKEN') || secretEnv('resend');
   if (fromEnv) return { apiKey: fromEnv, source: 'env' };
   if (typeof firebaseRead === 'function') {
     try {
@@ -121,6 +159,42 @@ function resolveResendSender() {
     parseFrom(env('EMAIL_FROM'), env('EMAIL_FROM_NAME') || 'Lumo Edge') ||
     { name: 'Lumo Edge', email: 'onboarding@resend.dev' }
   );
+}
+
+function resolveSmtpLogin(sender) {
+  return (
+    isValidEmail(env('BREVO_SMTP_LOGIN')) ||
+    isValidEmail(env('BREVO_SMTP_USER')) ||
+    isValidEmail(sender?.email) ||
+    'lumoedge08@gmail.com'
+  );
+}
+
+function truncatedKeyError() {
+  return 'Brevo key looks incomplete. Generate a new API key under SMTP & API → API keys and paste the full xkeysib- value.';
+}
+
+function rejectedKeyError() {
+  return 'Brevo rejected this key. Use a full API key from SMTP & API → API keys (starts with xkeysib-), not the SMTP key.';
+}
+
+export async function describeEmailConfig(firebaseRead) {
+  const resolved = await resolveEmailProvider(firebaseRead);
+  const secret = describeSecret(resolved.apiKey);
+  const sender = resolved.provider === 'resend' ? resolveResendSender() : resolveSender();
+  return {
+    configured: Boolean(resolved.apiKey),
+    provider: resolved.provider || '',
+    source: resolved.source || '',
+    transport:
+      secret.kind === 'smtp' ? 'smtp' : resolved.provider === 'brevo' ? 'api' : resolved.provider || '',
+    keyKind: secret.kind,
+    keyLength: secret.length,
+    keyPrefix: secret.prefix,
+    keyLooksTruncated: Boolean(secret.truncated),
+    senderEmail: sender.email,
+    senderName: sender.name,
+  };
 }
 
 async function sendViaBrevo({ apiKey, to, subject, html, text, tags }) {
@@ -246,32 +320,71 @@ export async function sendLumoEmail({
       error: 'Email provider is not configured. Set BREVO_API_KEY on the server.',
     };
   }
+  const secret = describeSecret(resolved.apiKey);
+  if (resolved.provider === 'brevo' && secret.truncated) {
+    return { ok: false, provider: 'brevo', transport: secret.kind || 'api', error: truncatedKeyError() };
+  }
   const plain =
     String(text || '').trim() ||
     String(html || '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+  const subjectLine = String(subject || '').trim() || 'Lumo Edge';
+  const htmlBody = String(html || '');
+  const tagList = tags || (template ? [template] : undefined);
   try {
-    const result =
-      resolved.provider === 'brevo'
-        ? await sendViaBrevo({
-            apiKey: resolved.apiKey,
+    if (resolved.provider === 'brevo') {
+      if (secret.kind === 'smtp') {
+        const sender = resolveSender();
+        const smtp = await sendViaBrevoSmtp({
+          smtpKey: resolved.apiKey,
+          login: resolveSmtpLogin(sender),
+          sender,
+          to: recipient,
+          subject: subjectLine,
+          html: htmlBody,
+          text: plain,
+          replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+        });
+        return { ...smtp, provider: 'brevo', transport: 'smtp' };
+      }
+      const rest = await sendViaBrevo({
+        apiKey: resolved.apiKey,
+        to: recipient,
+        subject: subjectLine,
+        html: htmlBody,
+        text: plain,
+        tags: tagList,
+      });
+      if (!rest.ok && /key not found/i.test(String(rest.error || ''))) {
+        if (secret.kind !== 'api') {
+          const sender = resolveSender();
+          const smtp = await sendViaBrevoSmtp({
+            smtpKey: resolved.apiKey,
+            login: resolveSmtpLogin(sender),
+            sender,
             to: recipient,
-            subject: String(subject || '').trim() || 'Lumo Edge',
-            html: String(html || ''),
+            subject: subjectLine,
+            html: htmlBody,
             text: plain,
-            tags: tags || (template ? [template] : undefined),
-          })
-        : await sendViaResend({
-            apiKey: resolved.apiKey,
-            to: recipient,
-            subject: String(subject || '').trim() || 'Lumo Edge',
-            html: String(html || ''),
-            text: plain,
-            tags: tags || (template ? [template] : undefined),
+            replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
           });
-    return { ...result, provider: resolved.provider };
+          if (smtp.ok) return { ...smtp, provider: 'brevo', transport: 'smtp' };
+        }
+        return { ok: false, provider: 'brevo', transport: 'api', error: rejectedKeyError() };
+      }
+      return { ...rest, provider: 'brevo', transport: 'api' };
+    }
+    const result = await sendViaResend({
+      apiKey: resolved.apiKey,
+      to: recipient,
+      subject: subjectLine,
+      html: htmlBody,
+      text: plain,
+      tags: tagList,
+    });
+    return { ...result, provider: resolved.provider, transport: 'api' };
   } catch (error) {
     return {
       ok: false,
