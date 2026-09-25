@@ -194,10 +194,19 @@ function upgradeTls(socket, host, timeoutMs) {
   });
 }
 
-async function authenticateAndSend(client, { username, password, fromEmail, to, mime }) {
+async function authenticate(client, username, password, method) {
+  if (method === 'plain') {
+    const token = Buffer.from(`\u0000${username}\u0000${password}`, 'utf8').toString('base64');
+    await client.command(`AUTH PLAIN ${token}`, 235);
+    return;
+  }
   await client.command('AUTH LOGIN', 334);
   await client.command(Buffer.from(username, 'utf8').toString('base64'), 334);
   await client.command(Buffer.from(password, 'utf8').toString('base64'), 235);
+}
+
+async function authenticateAndSend(client, { username, password, fromEmail, to, mime, method }) {
+  await authenticate(client, username, password, method);
   await client.command(`MAIL FROM:<${fromEmail}>`, 250);
   await client.command(`RCPT TO:<${to}>`, [250, 251]);
   await client.command('DATA', 354);
@@ -207,7 +216,7 @@ async function authenticateAndSend(client, { username, password, fromEmail, to, 
   return { ok: true, id: idMatch ? idMatch[0] : 'smtp' };
 }
 
-async function smtpStartTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs }) {
+async function smtpStartTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs, method }) {
   const plain = await connectPlain(host, port, timeoutMs);
   let client = new SmtpClient(plain, timeoutMs);
   try {
@@ -220,19 +229,19 @@ async function smtpStartTlsSession({ host, port, username, password, fromEmail, 
     const secure = await upgradeTls(plain, host, timeoutMs);
     client = new SmtpClient(secure, timeoutMs);
     await client.command('EHLO lumoedge.com', 250);
-    return await authenticateAndSend(client, { username, password, fromEmail, to, mime });
+    return await authenticateAndSend(client, { username, password, fromEmail, to, mime, method });
   } finally {
     client.destroy();
   }
 }
 
-async function smtpImplicitTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs }) {
+async function smtpImplicitTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs, method }) {
   const secure = await connectTls(host, port, timeoutMs);
   const client = new SmtpClient(secure, timeoutMs);
   try {
     await client.expect(220);
     await client.command('EHLO lumoedge.com', 250);
-    return await authenticateAndSend(client, { username, password, fromEmail, to, mime });
+    return await authenticateAndSend(client, { username, password, fromEmail, to, mime, method });
   } finally {
     client.destroy();
   }
@@ -245,6 +254,7 @@ async function smtpImplicitTlsSession({ host, port, username, password, fromEmai
 export async function sendViaBrevoSmtp({
   smtpKey,
   login,
+  logins,
   sender,
   to,
   subject,
@@ -252,9 +262,16 @@ export async function sendViaBrevoSmtp({
   text,
   replyTo,
 }) {
-  const username = headerSafe(login);
   const fromEmail = headerSafe(sender?.email);
-  if (!username || !fromEmail || !to || !smtpKey) {
+  const users = [];
+  const seen = new Set();
+  for (const raw of [login, ...(Array.isArray(logins) ? logins : [])]) {
+    const user = headerSafe(raw);
+    if (!user || seen.has(user.toLowerCase())) continue;
+    seen.add(user.toLowerCase());
+    users.push(user);
+  }
+  if (!users.length || !fromEmail || !to || !smtpKey) {
     return { ok: false, error: 'Brevo SMTP login or sender is missing.' };
   }
   const mime = buildMime({
@@ -266,24 +283,44 @@ export async function sendViaBrevoSmtp({
     text,
     replyTo,
   });
-  const sessionArgs = {
-    host: 'smtp-relay.brevo.com',
-    username,
-    password: smtpKey,
-    fromEmail,
-    to,
-    mime,
-    timeoutMs: 18000,
-  };
-  try {
-    return await smtpStartTlsSession({ ...sessionArgs, port: 587 });
-  } catch (startTlsError) {
-    try {
-      return await smtpImplicitTlsSession({ ...sessionArgs, port: 465 });
-    } catch (implicitError) {
-      const first = startTlsError instanceof Error ? startTlsError.message : 'STARTTLS failed';
-      const second = implicitError instanceof Error ? implicitError.message : 'SMTPS failed';
-      return { ok: false, error: `${first}; ${second}` };
+  const errors = [];
+  for (const username of users) {
+    for (const method of ['login', 'plain']) {
+      try {
+        return await smtpStartTlsSession({
+          host: 'smtp-relay.brevo.com',
+          port: 587,
+          username,
+          password: smtpKey,
+          fromEmail,
+          to,
+          mime,
+          timeoutMs: 12000,
+          method,
+        });
+      } catch (error) {
+        errors.push(`${username}/${method}: ${error instanceof Error ? error.message : 'failed'}`);
+      }
     }
   }
+  try {
+    return await smtpImplicitTlsSession({
+      host: 'smtp-relay.brevo.com',
+      port: 465,
+      username: users[0],
+      password: smtpKey,
+      fromEmail,
+      to,
+      mime,
+      timeoutMs: 12000,
+      method: 'plain',
+    });
+  } catch (implicitError) {
+    errors.push(`465/plain: ${implicitError instanceof Error ? implicitError.message : 'failed'}`);
+  }
+  return {
+    ok: false,
+    error:
+      'Brevo SMTP authentication failed. Add BREVO_SMTP_LOGIN with the SMTP login from Brevo → SMTP & API, or replace BREVO_API_KEY with an API key that starts with xkeysib-.',
+  };
 }

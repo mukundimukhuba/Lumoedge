@@ -161,13 +161,29 @@ function resolveResendSender() {
   );
 }
 
-function resolveSmtpLogin(sender) {
-  return (
-    isValidEmail(env('BREVO_SMTP_LOGIN')) ||
-    isValidEmail(env('BREVO_SMTP_USER')) ||
-    isValidEmail(sender?.email) ||
-    'lumoedge08@gmail.com'
-  );
+function resolveSmtpLogins(sender) {
+  const seen = new Set();
+  const logins = [];
+  for (const raw of [
+    env('BREVO_SMTP_LOGIN'),
+    env('BREVO_SMTP_USER'),
+    sender?.email,
+    'lumoedge08@gmail.com',
+    'mukundimukhuba8@gmail.com',
+  ]) {
+    const email = isValidEmail(raw) || headerSafeLogin(raw);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    logins.push(email);
+  }
+  return logins;
+}
+
+function headerSafeLogin(raw) {
+  const text = String(raw || '')
+    .replace(/[\r\n\0]+/g, '')
+    .trim();
+  return text && !/\s/.test(text) ? text : '';
 }
 
 function truncatedKeyError() {
@@ -194,6 +210,7 @@ export async function describeEmailConfig(firebaseRead) {
     keyLooksTruncated: Boolean(secret.truncated),
     senderEmail: sender.email,
     senderName: sender.name,
+    smtpLogin: secret.kind === 'smtp' ? resolveSmtpLogins(sender)[0] || '' : '',
   };
 }
 
@@ -339,7 +356,7 @@ export async function sendLumoEmail({
         const sender = resolveSender();
         const smtp = await sendViaBrevoSmtp({
           smtpKey: resolved.apiKey,
-          login: resolveSmtpLogin(sender),
+          logins: resolveSmtpLogins(sender),
           sender,
           to: recipient,
           subject: subjectLine,
@@ -362,7 +379,7 @@ export async function sendLumoEmail({
           const sender = resolveSender();
           const smtp = await sendViaBrevoSmtp({
             smtpKey: resolved.apiKey,
-            login: resolveSmtpLogin(sender),
+            logins: resolveSmtpLogins(sender),
             sender,
             to: recipient,
             subject: subjectLine,
