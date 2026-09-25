@@ -115,6 +115,14 @@ export async function resolveEmailProvider(firebaseRead) {
   return { provider: '', apiKey: '', source: '' };
 }
 
+function resolveResendSender() {
+  return (
+    parseFrom(env('RESEND_FROM')) ||
+    parseFrom(env('EMAIL_FROM'), env('EMAIL_FROM_NAME') || 'Lumo Edge') ||
+    { name: 'Lumo Edge', email: 'onboarding@resend.dev' }
+  );
+}
+
 async function sendViaBrevo({ apiKey, to, subject, html, text, tags }) {
   const sender = resolveSender();
   const payload = {
@@ -151,7 +159,7 @@ async function sendViaBrevo({ apiKey, to, subject, html, text, tags }) {
 }
 
 async function sendViaResend({ apiKey, to, subject, html, text, tags }) {
-  const sender = resolveSender();
+  const sender = resolveResendSender();
   const payload = {
     from: `${sender.name} <${sender.email}>`,
     to: [to],
