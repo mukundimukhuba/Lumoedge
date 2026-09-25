@@ -41,6 +41,18 @@
     {
       "source": "/assets/EmailCenterPage-(.*)",
       "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    },
+    {
+      "source": "/assets/MentorWebsitePage-(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    },
+    {
+      "source": "/assets/StorePage-(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    },
+    {
+      "source": "/assets/store-website.css",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
     }
   ],
   "crons": [

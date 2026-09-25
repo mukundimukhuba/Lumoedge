@@ -23,6 +23,7 @@ import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { handleEmailRoutes } from './email/routes.mjs';
+import { handleWebsiteRoutes } from './websiteRoutes.mjs';
 import {
   formatActivityDate,
   loginBlockForActivity,
@@ -179,6 +180,13 @@ export async function handleApi(req, res, pathname) {
       pathname,
     });
     if (emailHandled) return true;
+
+    const websiteHandled = await handleWebsiteRoutes(req, res, {
+      json,
+      readBody,
+      pathname,
+    });
+    if (websiteHandled) return true;
 
     if (pathname === '/api/auth/forgot' && req.method === 'POST') {
       const body = await readBody(req);
