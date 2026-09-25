@@ -153,6 +153,41 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
     }
 
     try {
+      const { notifyLicenseKey } = await import('./email/index.mjs');
+      const { markMentorActivitySatisfied } = await import('./mentorActivity.mjs');
+      const { firebaseRead, firebaseWrite } = await import('./clientMerge.mjs');
+      const licenses = [
+        ...incomingVault,
+        ...dbList(workspace?.licenses),
+        ...(key ? [findVaultEntry(merged.vault, key)].filter(Boolean) : []),
+      ];
+      const seen = new Set();
+      for (const license of licenses) {
+        const clientEmail = String(license?.clientEmail || license?.email || '').trim().toLowerCase();
+        const licenseKey = String(license?.key || '').trim();
+        if (!clientEmail || !licenseKey) continue;
+        const stamp = licenseKey.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (seen.has(stamp)) continue;
+        seen.add(stamp);
+        void notifyLicenseKey(
+          { firebaseRead, firebaseWrite, firebasePush: null },
+          {
+            ...license,
+            email: clientEmail,
+            clientEmail,
+            key: licenseKey,
+            ownerAdminId: adminId,
+          },
+        ).catch(() => undefined);
+      }
+      if (adminId && seen.size) {
+        await markMentorActivitySatisfied(adminId, 'license');
+      }
+    } catch {
+      /* never block license publish */
+    }
+
+    try {
       const {
         tryQualifyCommission,
         findAssignedLicenseForEmail,

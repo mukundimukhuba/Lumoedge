@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import {
   isRegistrationEmail,
   normalizeRegistrationEmail,
@@ -316,8 +317,28 @@ export function findAdminByEmail(admins, email) {
   );
 }
 
+export function isHashedPassword(stored) {
+  return String(stored || '').startsWith('sha256$');
+}
+
+export function hashPassword(password, salt) {
+  const s = String(salt || randomBytes(16).toString('hex'));
+  const digest = createHash('sha256').update(`${s}:${String(password || '')}`, 'utf8').digest('hex');
+  return `sha256$${s}$${digest}`;
+}
+
 export function passwordsMatch(stored, incoming) {
-  return String(stored || '') === String(incoming || '');
+  const value = String(stored || '');
+  const pass = String(incoming || '');
+  if (!value || !pass) return false;
+  if (isHashedPassword(value)) {
+    const parts = value.split('$');
+    const salt = parts[1] || '';
+    const digest = parts[2] || '';
+    const next = createHash('sha256').update(`${salt}:${pass}`, 'utf8').digest('hex');
+    return next === digest;
+  }
+  return value === pass;
 }
 
 export function loginResultFor(hit, email) {
@@ -328,6 +349,9 @@ export function loginResultFor(hit, email) {
   const admin = publicAdminRecord({ ...hit, email: normalized, role });
   if (role === 'pending' || (role !== 'admin' && role !== 'super')) {
     return { ok: false, error: 'pending', admin };
+  }
+  if (role !== 'super' && String(hit?.activityStatus || '').toLowerCase() === 'inactive') {
+    return { ok: false, error: 'inactive', admin };
   }
   return { ok: true, admin };
 }
@@ -353,8 +377,22 @@ export async function verifyMentorLogin(
   }
   const curAuth = (await io.read('lumo/auth')) || { admins: [] };
   const fbAdmins = toArray(curAuth.admins);
-  const hit = findAdminByEmail(fbAdmins, normalized);
+  const { applyMentorActivitySweep } = await import('./mentorActivity.mjs');
+  const swept = applyMentorActivitySweep(fbAdmins);
+  if (swept.changed) {
+    await io.write('lumo/auth', { admins: swept.admins, admin: null }).catch(() => false);
+  }
+  const liveAdmins = swept.admins;
+  const hit = findAdminByEmail(liveAdmins, normalized);
   if (hit && passwordsMatch(hit.password, pass)) {
+    if (!isHashedPassword(hit.password)) {
+      const upgraded = liveAdmins.map((row) =>
+        String(row?.email || '').toLowerCase() === normalized
+          ? { ...row, password: hashPassword(pass) }
+          : row,
+      );
+      await io.write('lumo/auth', { admins: upgraded, admin: null }).catch(() => false);
+    }
     return loginResultFor(hit, normalized);
   }
 
@@ -365,17 +403,23 @@ export async function verifyMentorLogin(
       ...hit,
       ...backupHit,
       email: normalized,
-      password: backupHit.password,
+      password: isHashedPassword(backupHit.password) ? backupHit.password : hashPassword(pass),
       id: hit?.id || backupHit.id,
       role: pickAdminRole(hit?.role, backupHit.role),
     };
-    const next = mergeAdminsLive(fbAdmins, [healed]);
+    const next = mergeAdminsLive(liveAdmins, [healed]);
     await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
     return loginResultFor(healed, normalized);
   }
 
   if (!hit && backupHit && passwordsMatch(backupHit.password, pass)) {
-    const next = mergeAdminsLive(fbAdmins, [{ ...backupHit, email: normalized }]);
+    const next = mergeAdminsLive(liveAdmins, [
+      {
+        ...backupHit,
+        email: normalized,
+        password: isHashedPassword(backupHit.password) ? backupHit.password : hashPassword(pass),
+      },
+    ]);
     await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
     return loginResultFor(backupHit, normalized);
   }

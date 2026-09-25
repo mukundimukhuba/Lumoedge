@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { publicAdminRecord } from './api/_lib/clientMerge.mjs';
+import { passwordsMatch, publicAdminRecord } from './api/_lib/clientMerge.mjs';
 import {
   applyMentorPassword,
   generateMentorPassword,
@@ -48,14 +48,15 @@ test('applyMentorPassword writes the new password onto the matching mentor only'
     actorId: 'LM-004821',
     resetAt: '2026-09-16T12:00:00.000Z',
   });
-  assert.equal(byId.hit.password, 'LE-ABCD-EFGH');
+  assert.equal(passwordsMatch(byId.hit.password, 'LE-ABCD-EFGH'), true);
+  assert.equal(byId.hit.password.startsWith('sha256$'), true);
   assert.equal(byId.hit.passwordResetBy, 'LM-004821');
   assert.equal(byId.admins[1].password, 'keep-me');
   assert.equal(publicAdminRecord(byId.hit).password, undefined);
 
   const byEmail = applyMentorPassword(admins, 'mentor@example.com', 'LE-WXYZ-2345');
   assert.equal(byEmail.hit.id, 'LM-111111');
-  assert.equal(byEmail.hit.password, 'LE-WXYZ-2345');
+  assert.equal(passwordsMatch(byEmail.hit.password, 'LE-WXYZ-2345'), true);
 
   const missing = applyMentorPassword(admins, 'LM-999999', 'LE-NOPE-NOPE');
   assert.equal(missing.hit, null);
@@ -138,7 +139,7 @@ test('resetMentorPassword writes the generated password into the mentor record',
   const result = await resetMentorPassword('LM-111111', { io, actorId: 'LM-004821' });
   assert.equal(result.ok, true);
   assert.match(result.password, /^LE-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/);
-  assert.equal(store['lumo/auth'].admins[0].password, result.password);
+  assert.equal(passwordsMatch(store['lumo/auth'].admins[0].password, result.password), true);
   assert.equal(store['lumo/auth'].admins[0].passwordResetBy, 'LM-004821');
   assert.equal(result.admin.password, undefined);
 

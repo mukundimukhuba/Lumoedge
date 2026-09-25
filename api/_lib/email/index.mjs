@@ -1,46 +1,68 @@
-import { isValidEmail, sendResendEmail, resolveResendApiKey } from './send.mjs';
-import { sendTrackedEmail } from './log.mjs';
+import { isValidEmail, sendLumoEmail, sendResendEmail, resolveEmailProvider } from './send.mjs';
+import { listEmailLogs, sendTrackedEmail } from './log.mjs';
 import {
   adminManualEmail,
   licenseKeyEmail,
   mentorApprovedEmail,
-  mentorReceivedEmail,
+  passwordResetEmail,
+  registrationConfirmationEmail,
 } from './messages.mjs';
+import { APP_LOGIN_URL } from './template.mjs';
 
-export { isValidEmail, sendResendEmail, resolveResendApiKey };
+export {
+  isValidEmail,
+  sendLumoEmail,
+  sendResendEmail,
+  resolveEmailProvider,
+  listEmailLogs,
+};
+
+function tracked(ctx, extra) {
+  return {
+    ...ctx,
+    sendLumoEmail,
+    sendResendEmail,
+    ...extra,
+  };
+}
 
 export async function notifyMentorReceived(ctx, mentor) {
   const to = isValidEmail(mentor?.email);
   if (!to) return { ok: false, skipped: true, error: 'no email' };
-  const msg = mentorReceivedEmail(mentor);
-  return sendTrackedEmail({
-    ...ctx,
-    sendResendEmail,
-    idempotencyKey: `mentor-received:${mentor.id || to}`,
-    type: 'mentor_received',
-    relatedId: String(mentor.id || ''),
-    to,
-    subject: msg.subject,
-    html: msg.html,
-    text: msg.text,
-  });
+  const msg = registrationConfirmationEmail(mentor);
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `registration:${mentor.id || to}`,
+      type: 'registration_confirmation',
+      relatedId: String(mentor.id || ''),
+      relatedUserId: String(mentor.id || ''),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
 }
 
 export async function notifyMentorApproved(ctx, mentor) {
   const to = isValidEmail(mentor?.email);
   if (!to) return { ok: false, skipped: true, error: 'no email' };
-  const msg = mentorApprovedEmail(mentor);
-  return sendTrackedEmail({
-    ...ctx,
-    sendResendEmail,
-    idempotencyKey: `mentor-approved:${mentor.id || to}`,
-    type: 'mentor_approved',
-    relatedId: String(mentor.id || ''),
-    to,
-    subject: msg.subject,
-    html: msg.html,
-    text: msg.text,
+  const msg = mentorApprovedEmail({
+    ...mentor,
+    portalUrl: mentor?.portalUrl || APP_LOGIN_URL,
   });
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `mentor-approved:${mentor.id || to}:${mentor.approvalDate || ''}`,
+      type: 'mentor_approval',
+      relatedId: String(mentor.id || ''),
+      relatedUserId: String(mentor.id || ''),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
 }
 
 export async function notifyLicenseKey(ctx, license) {
@@ -53,21 +75,50 @@ export async function notifyLicenseKey(ctx, license) {
     name: license?.clientName || license?.name,
     fullName: license?.fullName,
     clientName: license?.clientName,
+    firstName: license?.firstName,
     licenseKey: key,
     eaName: license?.eaName,
+    licenseDuration: license?.licenseDuration || license?.duration,
+    portalUrl: license?.portalUrl || APP_LOGIN_URL,
   });
   const norm = key.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return sendTrackedEmail({
-    ...ctx,
-    sendResendEmail,
-    idempotencyKey: `license-key:${norm}`,
-    type: 'license_key',
-    relatedId: norm,
-    to,
-    subject: msg.subject,
-    html: msg.html,
-    text: msg.text,
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `license-key:${norm}`,
+      type: 'license_key',
+      relatedId: norm,
+      relatedUserId: String(license?.ownerAdminId || license?.clientEmail || ''),
+      relatedLicenseId: String(license?.id || norm),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
+}
+
+export async function notifyPasswordReset(ctx, input) {
+  const to = isValidEmail(input?.email);
+  const code = String(input?.resetCode || '').trim();
+  if (!to || !code) return { ok: false, skipped: true, error: 'email or code missing' };
+  const msg = passwordResetEmail({
+    firstName: input.firstName,
+    name: input.name,
+    fullName: input.fullName,
+    resetCode: code,
   });
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `password-reset:${to}:${input.requestId || Date.now()}`,
+      type: 'password_reset',
+      relatedId: String(input.userId || ''),
+      relatedUserId: String(input.userId || ''),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
 }
 
 export async function notifyAdminManual(ctx, input) {
@@ -78,23 +129,22 @@ export async function notifyAdminManual(ctx, input) {
     messageHtml: input.html,
     messageText: input.text || input.message,
   });
-  return sendTrackedEmail({
-    ...ctx,
-    sendResendEmail,
-    idempotencyKey: `admin-manual:${to}:${Date.now()}`,
-    type: 'admin_manual',
-    relatedId: String(input.relatedId || ''),
-    to,
-    subject: msg.subject,
-    html: msg.html,
-    text: msg.text,
-  });
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `admin-manual:${to}:${Date.now()}`,
+      type: 'admin_manual',
+      relatedId: String(input.relatedId || ''),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
 }
 
 /**
  * Collect platform emails for broadcast audiences.
  * @param {'all_mentors'|'all_clients'|'everyone'} audience
- * @param {(path: string) => Promise<any>} firebaseRead
  */
 export async function resolveAudienceEmails(audience, firebaseRead) {
   const mentors = new Set();
@@ -138,9 +188,6 @@ export async function resolveAudienceEmails(audience, firebaseRead) {
 
   if (audience === 'all_mentors') return [...mentors];
   if (audience === 'all_clients') return [...clients];
-  if (audience === 'everyone') {
-    const all = new Set([...mentors, ...clients]);
-    return [...all];
-  }
+  if (audience === 'everyone') return [...new Set([...mentors, ...clients])];
   return [];
 }

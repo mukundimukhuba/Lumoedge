@@ -14,6 +14,7 @@ import {
   publicAdminList,
   publicAdminRecord,
   publicDbSnapshot,
+  hashPassword,
   verifyMentorLogin,
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
@@ -21,6 +22,15 @@ import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
+import { handleEmailRoutes } from './email/routes.mjs';
+import {
+  formatActivityDate,
+  loginBlockForActivity,
+  markMentorActivitySatisfied,
+  startMentorActivityPeriod,
+  sweepMentorActivity,
+} from './mentorActivity.mjs';
+import { completePasswordReset, consumeLoginAttempt, requestPasswordReset } from './passwordReset.mjs';
 import { tryQualifyCommission, tryReverseCommission } from './commissionEngine.mjs';
 import {
   matchSuperPassword,
@@ -163,6 +173,42 @@ export async function handleApi(req, res, pathname) {
     });
     if (passwordHandled) return true;
 
+    const emailHandled = await handleEmailRoutes(req, res, {
+      json,
+      readBody,
+      pathname,
+    });
+    if (emailHandled) return true;
+
+    if (pathname === '/api/auth/forgot' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { notifyPasswordReset } = await import('./email/index.mjs');
+      const result = await requestPasswordReset(body.email, {
+        notify: (payload) =>
+          notifyPasswordReset({ firebaseRead, firebaseWrite, firebasePush: null }, payload),
+      });
+      json(res, 200, result);
+      return true;
+    }
+
+    if (pathname === '/api/auth/reset' && req.method === 'POST') {
+      const body = await readBody(req);
+      const result = await completePasswordReset({
+        email: body.email,
+        code: body.code || body.resetCode,
+        password: body.password || body.newPassword,
+        confirm: body.confirm || body.confirmPassword,
+      });
+      json(res, result.ok ? 200 : 400, result);
+      return true;
+    }
+
+    if (pathname === '/api/cron/mentor-activity' && req.method === 'GET') {
+      const swept = await sweepMentorActivity();
+      json(res, 200, { ok: true, changed: swept.changed });
+      return true;
+    }
+
     const calendarHandled = await handleCalendarRoutes(req, res, {
       json,
       readBody,
@@ -275,6 +321,14 @@ export async function handleApi(req, res, pathname) {
       db.clients = mergeClients(db.clients || [], [created]);
       mirrorClientToSuper(db, created);
       await saveDb(db, sha);
+      const mentorId = String(body.mentorId || req.headers['x-lumo-admin-id'] || '').trim();
+      if (mentorId) {
+        try {
+          await markMentorActivitySatisfied(mentorId, 'client');
+        } catch {
+          /* never block client create */
+        }
+      }
       json(res, 201, created);
       return true;
     }
@@ -325,6 +379,15 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'email and password required' });
         return true;
       }
+      try {
+        const limited = await consumeLoginAttempt(email);
+        if (limited.limited) {
+          json(res, 401, { ok: false, error: 'invalid_credentials' });
+          return true;
+        }
+      } catch {
+        /* never block a valid login if the limiter is unavailable */
+      }
       let backupAdmins = [];
       try {
         const { db } = await loadDb();
@@ -336,8 +399,15 @@ export async function handleApi(req, res, pathname) {
       if (!result.ok && matchSuperPassword(email, password)) {
         result = { ok: true, admin: { ...SUPER_LOGIN.user } };
       }
+      if (result.ok) {
+        const blocked = loginBlockForActivity(result.admin);
+        if (blocked) {
+          json(res, 403, { ok: false, error: blocked.error, message: blocked.message });
+          return true;
+        }
+      }
       if (!result.ok) {
-        const status = result.error === 'pending' ? 403 : 401;
+        const status = result.error === 'pending' || result.error === 'inactive' ? 403 : 401;
         json(res, status, {
           ok: false,
           error: result.error || 'invalid_credentials',
@@ -409,7 +479,7 @@ export async function handleApi(req, res, pathname) {
         id: `LM-${Math.floor(100000 + Math.random() * 900000)}`,
         email,
         fullName,
-        password,
+        password: hashPassword(password),
         role: 'pending',
         mentorName: String(body.mentorName || '').trim(),
         eaName: String(body.eaName || '').trim(),
@@ -513,18 +583,29 @@ export async function handleApi(req, res, pathname) {
         json(res, 502, { ok: false, error: 'approve_failed' });
         return true;
       }
+      let active = fbUpdated;
       if (priorRole === 'pending' && role === 'admin') {
+        try {
+          active =
+            (await startMentorActivityPeriod(fbUpdated.id || fbUpdated.email)) || fbUpdated;
+        } catch {
+          active = fbUpdated;
+        }
         try {
           const { notifyMentorApproved } = await import('./email/index.mjs');
           void notifyMentorApproved(
             { firebaseRead, firebaseWrite, firebasePush: null },
-            fbUpdated,
+            {
+              ...active,
+              approvalDate: formatActivityDate(active.approvalDate),
+              deadlineDate: formatActivityDate(active.deadlineDate),
+            },
           ).catch(() => undefined);
         } catch {
           /* never block approve */
         }
       }
-      json(res, 200, { ok: true, admin: publicAdminRecord(fbUpdated) });
+      json(res, 200, { ok: true, admin: publicAdminRecord(active || fbUpdated) });
       return true;
     }
 

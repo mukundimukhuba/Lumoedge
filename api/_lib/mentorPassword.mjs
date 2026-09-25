@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { requireSuper, SUPER_LOGIN, verifyAdminSession } from './adminSession.mjs';
-import { firebaseRead, firebaseWrite, publicAdminRecord } from './clientMerge.mjs';
+import { firebaseRead, firebaseWrite, hashPassword, publicAdminRecord } from './clientMerge.mjs';
 
 const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -40,7 +40,7 @@ export function applyMentorPassword(admins, idOrEmail, password, meta = {}) {
     if (!matchAdminRow(row, idOrEmail)) return row;
     hit = {
       ...row,
-      password,
+      password: hashPassword(password),
       passwordResetAt: meta.resetAt || new Date().toISOString(),
       passwordResetBy: meta.actorId || '',
     };

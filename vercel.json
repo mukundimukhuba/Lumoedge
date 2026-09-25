@@ -37,6 +37,16 @@
     {
       "source": "/assets/AdminPages-(.*)",
       "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    },
+    {
+      "source": "/assets/EmailCenterPage-(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/mentor-activity",
+      "schedule": "0 6 * * *"
     }
   ],
   "functions": {
