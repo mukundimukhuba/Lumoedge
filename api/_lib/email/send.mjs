@@ -105,7 +105,16 @@ export function resolveSender() {
   return { name, email: 'noreply@lumoedge.com' };
 }
 
-/** Env first, then optional Firebase secret (server-side only). Never log the key. */
+function pickBrevoSecret(candidates) {
+  const usable = candidates.filter((row) => row?.apiKey);
+  const api = usable.find((row) => describeSecret(row.apiKey).kind === 'api' && !describeSecret(row.apiKey).truncated);
+  if (api) return api;
+  const smtp = usable.find((row) => describeSecret(row.apiKey).kind === 'smtp' && !describeSecret(row.apiKey).truncated);
+  if (smtp) return smtp;
+  return usable[0] || { apiKey: '', source: '' };
+}
+
+/** Prefer a real API key over an SMTP key, from env or Firebase. Never log the key. */
 export async function resolveBrevoApiKey(firebaseRead) {
   const fromEnv =
     secretEnv('BREVO_API_KEY') ||
@@ -116,17 +125,19 @@ export async function resolveBrevoApiKey(firebaseRead) {
     secretEnv('brevo') ||
     secretEnv('brevo_api_key') ||
     scanBrevoApiKeyFromEnv();
-  if (fromEnv) return { apiKey: fromEnv, source: 'env' };
+  let fromFirebase = '';
   if (typeof firebaseRead === 'function') {
     try {
       const secret = (await firebaseRead('lumo/secrets/brevo')) || {};
-      const key = cleanKey(secret.apiKey || secret.BREVO_API_KEY || secret.key);
-      if (key) return { apiKey: key, source: 'firebase' };
+      fromFirebase = cleanKey(secret.apiKey || secret.BREVO_API_KEY || secret.key);
     } catch {
       /* ignore */
     }
   }
-  return { apiKey: '', source: '' };
+  return pickBrevoSecret([
+    { apiKey: fromEnv, source: 'env' },
+    { apiKey: fromFirebase, source: 'firebase' },
+  ]);
 }
 
 export async function resolveResendApiKey(firebaseRead) {

@@ -222,6 +222,35 @@ test('rejected or truncated Brevo keys stay off Resend and never leak credential
   }
 });
 
+test('a Firebase API key wins over an SMTP key left on the server env', async () => {
+  const prev = process.env.BREVO_API_KEY;
+  process.env.BREVO_API_KEY = `xsmtpsib-${'c'.repeat(80)}`;
+  const originalFetch = globalThis.fetch;
+  let usedHeader = '';
+  globalThis.fetch = async (_url, opts) => {
+    usedHeader = String(opts?.headers?.['api-key'] || '');
+    return { ok: true, json: async () => ({ messageId: 'msg-firebase-api' }) };
+  };
+  try {
+    const result = await sendLumoEmail({
+      to: 'mukundimukhuba8@gmail.com',
+      subject: 'Test',
+      html: '<p>Hi</p>',
+      text: 'Hi',
+      firebaseRead: async () => ({ apiKey: `xkeysib-${'d'.repeat(80)}` }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.provider, 'brevo');
+    assert.equal(result.transport, 'api');
+    assert.equal(usedHeader.startsWith('xkeysib-'), true);
+    assert.equal(usedHeader.startsWith('xsmtpsib-'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (prev == null) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = prev;
+  }
+});
+
 test('email logs never include credentials', () => {
   const rows = listEmailLogs({
     'log-1': {
