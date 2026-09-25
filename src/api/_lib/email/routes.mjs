@@ -6,6 +6,10 @@ import {
   resolveAudienceEmails,
   resolveEmailProvider,
 } from './index.mjs';
+import { isValidEmail } from './send.mjs';
+
+const TEST_ALLOWLIST = new Set(['mukundimukhuba8@gmail.com', 'lumoedge08@gmail.com']);
+const testSends = [];
 
 function sessionOrSuperPassword(session, body) {
   if (session?.ok && requireSuper(session)) return true;
@@ -23,6 +27,45 @@ export async function handleEmailRoutes(req, res, ctx) {
       configured: Boolean(resolved.apiKey),
       provider: resolved.provider || '',
       source: resolved.source || '',
+    });
+    return true;
+  }
+
+  if (path === '/api/email/test' && req.method === 'POST') {
+    const body = await readBody(req);
+    const to = isValidEmail(body?.to || 'mukundimukhuba8@gmail.com');
+    if (!TEST_ALLOWLIST.has(to)) {
+      json(res, 400, { ok: false, error: 'test_recipient_not_allowed' });
+      return true;
+    }
+    const now = Date.now();
+    const recent = testSends.filter((at) => now - at < 60 * 60 * 1000);
+    testSends.length = 0;
+    testSends.push(...recent, now);
+    if (recent.length >= 5) {
+      json(res, 429, { ok: false, error: 'test_rate_limited' });
+      return true;
+    }
+    const result = await notifyAdminManual(
+      { firebaseRead, firebaseWrite, firebasePush: null },
+      {
+        to,
+        subject: 'Lumo Edge email test',
+        message: [
+          'Hi Mukundi,',
+          '',
+          'This is a live Lumo Edge email test using the server Brevo/Resend configuration.',
+          '',
+          'If you can read this, the branded Lumo Edge template and the new API key are working.',
+          '',
+          'Lumo Edge Team',
+        ].join('\n'),
+      },
+    );
+    json(res, result.ok ? 200 : 502, {
+      ok: Boolean(result.ok),
+      provider: result.provider || '',
+      error: result.error || '',
     });
     return true;
   }

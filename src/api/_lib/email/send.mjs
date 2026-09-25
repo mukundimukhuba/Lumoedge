@@ -15,7 +15,33 @@ function cleanKey(raw) {
 }
 
 function env(name) {
-  return cleanKey(process.env[name]);
+  const direct = cleanKey(process.env[name]);
+  if (direct) return direct;
+  const wanted = String(name || '').toLowerCase();
+  for (const [key, value] of Object.entries(process.env || {})) {
+    if (String(key || '').toLowerCase() === wanted) {
+      const hit = cleanKey(value);
+      if (hit) return hit;
+    }
+  }
+  return '';
+}
+
+function scanBrevoApiKeyFromEnv() {
+  for (const [key, value] of Object.entries(process.env || {})) {
+    const val = cleanKey(value);
+    if (!val) continue;
+    if (val.startsWith('xkeysib-')) return val;
+    if (
+      /brevo|sendinblue|sendin_blue/i.test(String(key || '')) &&
+      val.length > 24 &&
+      !val.startsWith('xsmtpsib-') &&
+      !val.startsWith('re_')
+    ) {
+      return val;
+    }
+  }
+  return '';
 }
 
 function parseFrom(raw, fallbackName = 'Lumo Edge') {
@@ -49,7 +75,10 @@ export async function resolveBrevoApiKey(firebaseRead) {
     env('BREVO_API_KEY') ||
     env('SENDINBLUE_API_KEY') ||
     env('BREVO_KEY') ||
-    env('brevo');
+    env('BREVO_API') ||
+    env('brevo') ||
+    env('brevo_api_key') ||
+    scanBrevoApiKeyFromEnv();
   if (fromEnv) return { apiKey: fromEnv, source: 'env' };
   if (typeof firebaseRead === 'function') {
     try {
