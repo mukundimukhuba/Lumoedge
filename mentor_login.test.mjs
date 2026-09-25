@@ -39,7 +39,8 @@ test('empty live password can be healed from backup, but a Super reset is not ov
     io,
   );
   assert.equal(healed.ok, true);
-  assert.equal(io.store['lumo/auth'].admins[0].password, 'original-pass');
+  assert.equal(passwordsMatch(io.store['lumo/auth'].admins[0].password, 'original-pass'), true);
+  assert.equal(io.store['lumo/auth'].admins[0].password.includes('original-pass'), false);
   assert.equal(healed.admin.password, undefined);
 
   const resetIo = createIo([

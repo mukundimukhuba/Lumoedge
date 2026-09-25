@@ -99,8 +99,9 @@ test('password reset codes are hashed, single-use, and expire', async () => {
   });
   assert.equal(first.ok, true);
   assert.equal(sent[0].resetCode, '111111');
-  const stored = Object.values(io.store).find((row) => row?.codeHash);
+  const stored = Object.values(io.store['lumo/passwordResets'] || {}).find((row) => row?.codeHash);
   assert.equal(stored.resetCode, undefined);
+  assert.equal(stored.codeHash, hashResetCode('111111'));
   assert.equal(resetCodesMatch(hashResetCode('111111'), '111111'), true);
 
   const reusedUnknown = await requestPasswordReset('nobody@example.com', { io, now: 2_000 });
