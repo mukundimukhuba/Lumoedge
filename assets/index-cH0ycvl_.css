@@ -53,7 +53,7 @@ html[data-layout=hero]:not([data-dock-reveal="1"]) .os-shell.os-shell-home .os-l
 .lay-pro-runbar.is-paused{background:linear-gradient(90deg,#3a2a1c,#1a120c);color:#f8e7b0;border:1px solid rgba(232,168,124,.4)}
 .lay-pro-links{display:flex;gap:8px}
 .lay-pro-links .lay-pro-link{flex:1}
-.lay-pro-session-card.is-quiet{background:#100c0acc;border-color:rgba(232,168,124,.22)}
+.lay-pro-session-card.is-quiet{background:#100c0acc;border-color:rgba(232,168,124,.22)}.lay-pro-session-card.is-quiet span{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;flex:1}.lay-pro-session-card.is-quiet strong{flex:none}
 .lay-pro-nova .os-layout-wash{background:linear-gradient(#07060a00 0%,#07060a66 46%,#07060ae8 100%)!important}
 .lay-pro-aura .os-layout-wash{background:linear-gradient(180deg,#3a221499 0%,#1a100c66 42%,#0c0706e0 100%)!important}
 .lay-pro-nova .os-layout-bg,.lay-pro-aura .os-layout-bg{filter:saturate(1.05) contrast(1.04)}
