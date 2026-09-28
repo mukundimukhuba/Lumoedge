@@ -3,8 +3,12 @@ import { test } from 'node:test';
 import {
   CHART_SCAN_PROMPT,
   buildScanResponse,
+  clampScanLot,
+  clampScanTrades,
   demoScanLevels,
   deriveTakeProfit,
+  isScanTradeable,
+  normalizeScanAccuracy,
   parseChartScanModelText,
   resolveScanPrices,
   validateScanPrices,
@@ -119,6 +123,36 @@ test('demo levels always include entry, SL, and TP for both sides', () => {
       assert.ok(levels.takeProfit3 < levels.takeProfit2);
     }
   }
+});
+
+test('missing model confidence stays below auto-trade', () => {
+  const accuracy = normalizeScanAccuracy({}, 'data:image/png;base64,abc');
+  assert.ok(accuracy >= 55 && accuracy < 74);
+  assert.equal(isScanTradeable({ accuracy: 80, pricesValid: true, symbol: 'XAUUSD', demo: true }), false);
+  assert.equal(isScanTradeable({ accuracy: 80, pricesValid: false, symbol: 'XAUUSD' }), false);
+  assert.equal(isScanTradeable({ accuracy: 80, pricesValid: true, symbol: '' }), false);
+  assert.equal(isScanTradeable({ accuracy: 73, pricesValid: true, symbol: 'XAUUSD' }), false);
+  assert.equal(isScanTradeable({ accuracy: 74, pricesValid: true, symbol: 'XAUUSD' }), true);
+  assert.equal(clampScanLot(50), 1);
+  assert.equal(clampScanTrades(20), 3);
+});
+
+test('structure vs stop conflict is not auto-tradeable', () => {
+  const result = buildScanResponse({
+    symbol: 'XAUUSD',
+    symbol_visible: true,
+    trend_bias: 'bullish',
+    direction: 'sell',
+    accuracy_percent: 86,
+    entry_price: 2345.6,
+    stop_loss: 2351.2,
+    summary: 'Conflict',
+  });
+  assert.equal(result.payload.ok, true);
+  assert.equal(result.payload.direction, 'buy');
+  assert.equal(result.payload.pricesValid, false);
+  assert.equal(result.payload.tradeable, false);
+  assert.ok(result.payload.accuracy < 74);
 });
 
 test('OpenAI chat wrapper JSON is parsed for nested scan fields', () => {

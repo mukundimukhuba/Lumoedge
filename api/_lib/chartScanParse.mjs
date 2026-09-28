@@ -106,24 +106,23 @@ export function resolveScanDirection(parsed, accuracy, image = '') {
   const stopLoss = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
   const implied = priceImpliedDirection(entryPrice, stopLoss);
 
-  // SL placement is the strongest objective signal — model often gets direction wrong but SL right
-  if (implied && implied !== direction) {
+  const trendDir = trendBias === 'bullish' ? 'buy' : trendBias === 'bearish' ? 'sell' : null;
+
+  // Structure vs stop conflict is not tradeable — do not flip twice and keep a wrong-side SL.
+  if (trendDir && implied && trendDir !== implied) {
+    direction = trendDir;
+    corrected = true;
+    correctionReason = 'structure vs stop conflict';
+    accuracy = Math.min(62, accuracy - 12);
+  } else if (implied && implied !== direction) {
     direction = implied;
     corrected = true;
     correctionReason = 'stop_loss placement';
     accuracy = Math.max(55, accuracy - 6);
-  }
-
-  // Trend bias must agree with direction unless ranging/unknown
-  if (trendBias === 'bullish' && direction === 'sell') {
-    direction = 'buy';
+  } else if (trendDir && trendDir !== direction) {
+    direction = trendDir;
     corrected = true;
-    correctionReason = correctionReason || 'bullish structure';
-    accuracy = Math.max(55, accuracy - 8);
-  } else if (trendBias === 'bearish' && direction === 'buy') {
-    direction = 'sell';
-    corrected = true;
-    correctionReason = correctionReason || 'bearish structure';
+    correctionReason = trendDir === 'buy' ? 'bullish structure' : 'bearish structure';
     accuracy = Math.max(55, accuracy - 8);
   }
 
@@ -168,7 +167,8 @@ export function normalizeScanAccuracy(parsed, image = '') {
 
   let accuracy = Number(parsed.accuracy_percent ?? parsed.accuracy ?? 0);
   if (!Number.isFinite(accuracy) || accuracy <= 0) {
-    accuracy = 68 + (seed % 18);
+    // Missing model confidence is not a 70%+ setup — keep it below auto-trade.
+    accuracy = 58 + (seed % 5);
   }
   if (accuracy % 5 === 0) {
     accuracy += jitter;
@@ -204,6 +204,32 @@ export function roundScanPrice(value, decimals) {
 }
 
 export const TP_RATIOS = [1, 2, 3];
+export const MIN_AUTO_TRADE_ACCURACY = 74;
+export const MAX_SCAN_TRADES = 3;
+export const MAX_SCAN_LOT = 1;
+export const MIN_SCAN_LOT = 0.01;
+
+export function isScanTradeable({ accuracy, pricesValid, symbol, demo } = {}) {
+  const pair = String(symbol || '').trim();
+  return (
+    !demo &&
+    Boolean(pair) &&
+    pricesValid === true &&
+    Number(accuracy) >= MIN_AUTO_TRADE_ACCURACY
+  );
+}
+
+export function clampScanLot(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return MIN_SCAN_LOT;
+  return Math.max(MIN_SCAN_LOT, Math.min(MAX_SCAN_LOT, n));
+}
+
+export function clampScanTrades(raw) {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.max(1, Math.min(MAX_SCAN_TRADES, n));
+}
 
 export function deriveTakeProfit(direction, entryPrice, stopLoss, ratio = 2) {
   const risk = Math.abs(entryPrice - stopLoss);
@@ -328,9 +354,21 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
   }
 
   const prices = resolveScanPrices(parsed, resolved.direction);
+  if (!prices.pricesValid || resolved.correctionReason === 'structure vs stop conflict') {
+    resolved.accuracy = Math.min(resolved.accuracy, 62);
+  }
+  if (resolved.corrected) {
+    resolved.accuracy = Math.min(resolved.accuracy, 68);
+  }
   const timeframeRaw = parsed.timeframe == null ? '' : String(parsed.timeframe).trim();
   const timeframe =
     !timeframeRaw || /null|unknown|n\/a|none/i.test(timeframeRaw) ? undefined : timeframeRaw;
+  const tradeable = isScanTradeable({
+    accuracy: resolved.accuracy,
+    pricesValid: prices.pricesValid,
+    symbol,
+    demo,
+  });
 
   return {
     ok: true,
@@ -338,6 +376,7 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
     payload: {
       ok: true,
       demo,
+      tradeable,
       accuracy: resolved.accuracy,
       symbol,
       timeframe,

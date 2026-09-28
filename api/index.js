@@ -729,25 +729,16 @@ export default async function handler(req, res) {
         CHART_SCAN_PROMPT,
         parseChartScanModelText,
         buildScanResponse,
-        demoScanLevels,
       } = await import('./_lib/chartScanParse.mjs');
 
       if (!CHART_SCAN_API_KEY) {
-        const accuracy = 70 + Math.floor(Math.random() * 21);
-        const demoSymbols = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NAS100', 'BTCUSD'];
-        const symbol = demoSymbols[Math.floor(Math.random() * demoSymbols.length)];
-        const direction = Math.random() > 0.5 ? 'buy' : 'sell';
-        const levels = demoScanLevels(symbol, direction);
-        send(res, 200, {
-          ok: true,
+        send(res, 503, {
+          ok: false,
           demo: true,
-          accuracy,
-          symbol,
-          timeframe: 'M15',
-          direction,
-          summary: 'Demo mode — add CHART_SCAN_API_KEY on Vercel for live AI scans.',
-          ...levels,
-          pricesValid: true,
+          tradeable: false,
+          accuracy: 0,
+          pricesValid: false,
+          error: 'Chart Scanner is not configured. Fake demo signals are disabled so they cannot be sent to MT5.',
         });
         return;
       }
