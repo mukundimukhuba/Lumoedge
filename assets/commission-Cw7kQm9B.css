@@ -1,11 +1,17 @@
-.commission-page{display:grid;gap:14px;padding-bottom:28px;overflow-x:hidden;max-width:100%;min-width:0}
-.commission-page .btn,.commission-page button,.commission-page input,.commission-page select,.commission-page textarea{font-size:16px!important;touch-action:manipulation;-webkit-text-size-adjust:100%}
+html[data-admin-portal] .admin-shell-dark,html[data-admin-portal] .admin-page-body-cyber{max-width:100%;min-width:0;overflow-x:hidden}
+.commission-page{display:grid;gap:14px;padding-bottom:28px;overflow-x:hidden;max-width:100%;width:100%;min-width:0;box-sizing:border-box}
+.commission-page *,.commission-page *::before,.commission-page *::after{box-sizing:border-box}
+.commission-page .glow-card{max-width:100%;min-width:0;overflow:hidden}
+.commission-page .btn,.commission-page button,.commission-page input,.commission-page select,.commission-page textarea{font-size:16px!important;touch-action:manipulation;-webkit-text-size-adjust:100%;max-width:100%}
+.commission-page input,.commission-page select,.commission-page textarea{width:100%;min-width:0}
 .commission-page .btn:active,.commission-page button:active{transform:none}
-.commission-page .stat-grid,.commission-page .admin-stat-grid{width:100%;max-width:100%;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr))}
-.commission-page .stat-grid>*,.commission-page .admin-stat-grid>*{min-width:0}
+.commission-page .stat-grid,.commission-page .admin-stat-grid{display:grid;width:100%;max-width:100%;min-width:0;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.commission-page .stat-grid>*,.commission-page .admin-stat-grid>*{min-width:0;max-width:100%}
+.commission-page .admin-stat-value{font-size:22px;overflow-wrap:anywhere}
+.commission-page .admin-stat-label{white-space:normal;overflow-wrap:anywhere;line-height:1.3}
 .commission-kicker{margin:0;font-size:11px;font-weight:800;letter-spacing:.14em;color:var(--electric)}
-.commission-title{margin:4px 0 0;font-family:var(--font-display);font-size:22px;letter-spacing:.04em}
-.commission-lead{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.55}
+.commission-title{margin:4px 0 0;font-family:var(--font-display);font-size:22px;letter-spacing:.04em;overflow-wrap:anywhere}
+.commission-lead{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.55;overflow-wrap:anywhere}
 .commission-progress{height:8px;border-radius:999px;background:rgba(148,163,184,.16);overflow:hidden}
 .commission-progress>span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#39ff14,#94a3b8)}
 .commission-badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
@@ -14,6 +20,7 @@
 .commission-badge.paid{color:var(--electric);background:rgba(148,163,184,.12);border:1px solid rgba(148,163,184,.35)}
 .commission-badge.reversed,.commission-badge.rejected,.commission-badge.inactive{color:#f87171;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.35)}
 .commission-badge.requested,.commission-badge.approved,.commission-badge.admin,.commission-badge.mentor{color:#93c5fd;background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.35)}
+.commission-table-wrap{width:100%;max-width:100%;min-width:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .commission-table{width:100%;border-collapse:collapse;font-size:12px}
 .commission-table th{text-align:left;color:var(--muted);font-weight:700;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.08)}
 .commission-table td{padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
@@ -21,25 +28,35 @@
 .commission-steps strong{color:var(--text)}
 .commission-empty{margin:0;padding:18px 8px;text-align:center;color:var(--muted)}
 .commission-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
-.commission-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.commission-actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;width:100%;max-width:100%;min-width:0}
 .commission-chip-row{display:flex;flex-wrap:wrap;gap:8px}
 .commission-chip{border:1px solid rgba(59,130,246,.35);background:rgba(8,14,28,.72);color:var(--text);border-radius:999px;padding:7px 12px;font-size:16px;font-weight:700;cursor:pointer;touch-action:manipulation}
 .commission-chip.is-on{background:linear-gradient(135deg,#2563eb,#0ea5e9);border-color:transparent;color:#fff}
 .commission-rank-list{display:grid;gap:10px}
-.commission-rank-card{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;text-align:left;width:100%;border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:16px;padding:14px;color:inherit;box-shadow:0 0 18px rgba(37,99,235,.12)}
+.commission-rank-card{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:start;text-align:left;width:100%;max-width:100%;min-width:0;border:1px solid rgba(59,130,246,.28);background:rgba(8,12,22,.78);border-radius:16px;padding:14px;color:inherit;box-shadow:0 0 18px rgba(37,99,235,.12)}
 .commission-rank-card:hover,.commission-rank-card.is-open{border-color:rgba(14,165,233,.7);box-shadow:0 0 22px rgba(14,165,233,.22)}
-.commission-edit-panel{margin-top:12px;padding:12px;border:1px solid rgba(14,165,233,.35);background:rgba(8,18,36,.72);border-radius:14px}
+.commission-edit-panel{margin-top:12px;padding:12px;border:1px solid rgba(14,165,233,.35);background:rgba(8,18,36,.72);border-radius:14px;max-width:100%;min-width:0}
 .commission-rank-num{font-family:var(--font-display);font-size:22px;font-weight:800;color:#7dd3fc;min-width:42px}
-.commission-rank-meta{display:grid;gap:4px;font-size:13px}
+.commission-rank-meta{display:grid;gap:4px;font-size:13px;min-width:0}
 .commission-rank-meta strong{font-size:16px}
 .commission-rank-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;margin-top:8px;color:var(--muted);font-size:12px}
 .commission-rank-grid b{color:var(--text);font-weight:700}
 .commission-check{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(--muted)}
 .commission-banner{border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.08);border-radius:14px;padding:12px 14px;color:#fde68a;font-size:13px}
 .commission-restricted{color:var(--muted);font-size:13px;line-height:1.55}
-@media (max-width:640px){
-  .commission-table-wrap{overflow:auto}
-  .commission-table{min-width:640px}
-  .commission-rank-grid{grid-template-columns:1fr}
+@media (max-width:720px){
+  html[data-admin-portal] .admin-page-body-cyber{padding:12px 12px 28px}
+  .commission-page{gap:12px}
+  .commission-title{font-size:20px}
+  .commission-page .stat-grid,.commission-page .admin-stat-grid{grid-template-columns:1fr;gap:8px}
+  .commission-page .admin-stat-card{min-height:72px;padding:12px}
+  .commission-page .admin-stat-value{font-size:24px}
   .commission-actions{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .commission-page .btn.btn-blue,.commission-page .btn.btn-ghost{width:100%}
+  .commission-filters{grid-template-columns:1fr 1fr}
+  .commission-rank-grid{grid-template-columns:1fr}
+  .commission-rank-card{grid-template-columns:1fr;padding:12px}
+  .commission-table-wrap{overflow-x:auto;max-width:100%}
+  .commission-table{min-width:520px}
+  .commission-page .glow-card{padding:14px}
 }

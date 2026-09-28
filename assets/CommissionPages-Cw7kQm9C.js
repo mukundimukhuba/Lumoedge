@@ -5,7 +5,7 @@ import { r as apiUrl } from "./apiBase-CDudBPOx.js";
 if (typeof document !== "undefined" && !document.querySelector("link[data-commission-css]")) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = "/assets/commission-Cw7kQm9B.css";
+  link.href = "/assets/commission-Cw7kQm9B.css?v=mobile1";
   link.dataset.commissionCss = "1";
   document.head.appendChild(link);
 }
