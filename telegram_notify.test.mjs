@@ -130,3 +130,46 @@ test('sendTelegramMessage reports Telegram API errors', async () => {
     globalThis.fetch = original;
   }
 });
+
+test('resolveTelegramConfig maps super-admin email when mentorId is missing', async () => {
+  const reads = [];
+  const cfg = await resolveTelegramConfig(
+    async (path) => {
+      reads.push(path);
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { botToken: '1:GLOBAL', chatId: '-1002117297165', enabled: true };
+      }
+      if (path === 'lumo/auth') {
+        return { admins: [{ id: 'LM-004821', email: 'mukundimukhuba8@gmail.com' }] };
+      }
+      if (path.endsWith('/profile')) {
+        return { telegramBotToken: '9:FROM-PROFILE', telegramChatId: '-9', telegramAlertsEnabled: true };
+      }
+      return null;
+    },
+    { email: 'mukundimukhuba8@gmail.com' },
+  );
+  assert.equal(cfg.mentorId, 'LM-004821');
+  assert.equal(cfg.token, '9:FROM-PROFILE');
+  assert.ok(reads.includes('lumo/auth'));
+});
+
+test('notify still sends from global secrets when mentorId and email are empty', async () => {
+  const sent = [];
+  const result = await postTelegramTrade(
+    async (path) => {
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { mentorId: 'LM-004821', botToken: '111:TOKEN', chatId: '-1002117297165', enabled: true };
+      }
+      return null;
+    },
+    { symbol: 'XAUUSD', side: 'buy', source: 'Chart Scanner Auto Trade' },
+    async (token, chat, text) => {
+      sent.push({ token, chat, text });
+      return { ok: true };
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].chat, '-1002117297165');
+});

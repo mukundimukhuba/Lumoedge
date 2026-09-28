@@ -106,8 +106,25 @@ export function normalizeTelegramChatId(value) {
   return String(value || '').trim().replace(/\s+/g, '');
 }
 
+const SUPER_ADMIN_EMAIL = 'mukundimukhuba8@gmail.com';
+const SUPER_ADMIN_ID = 'LM-004821';
+
 export async function resolveTelegramConfig(firebaseRead, input = {}) {
-  const mentorId = String(input.mentorId || '').trim();
+  let mentorId = String(input.mentorId || '').trim();
+  const email = String(input.email || '').trim().toLowerCase();
+  if (!mentorId && email) {
+    try {
+      const auth = (await firebaseRead('lumo/auth')) || null;
+      const admins = Array.isArray(auth?.admins) ? auth.admins : [];
+      const hit = admins.find(
+        (row) => String(row?.email || '').trim().toLowerCase() === email,
+      );
+      mentorId = String(hit?.id || hit?.mentorId || '').trim();
+    } catch {
+      mentorId = '';
+    }
+    if (!mentorId && email === SUPER_ADMIN_EMAIL) mentorId = SUPER_ADMIN_ID;
+  }
   const bodyToken = normalizeTelegramBotToken(input.botToken);
   const bodyChat = normalizeTelegramChatId(input.chatId);
   let stored = null;
