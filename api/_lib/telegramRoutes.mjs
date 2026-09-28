@@ -1,6 +1,7 @@
 import { firebaseRead, firebaseWrite } from './clientMerge.mjs';
 import {
   buildTelegramTradeMessage,
+  canPostTelegramTradeAlert,
   resolveTelegramConfig,
   sendTelegramMessage,
   normalizeTelegramBotToken,
@@ -55,6 +56,9 @@ export async function saveTelegramAlerts(firebaseWriteFn, input, firebaseReadFn 
 export async function postTelegramTrade(firebaseReadFn, body, send = sendTelegramMessage) {
   if (body?.notify === false && !body?.test) {
     return { ok: true, skipped: true, reason: 'notify_off' };
+  }
+  if (!canPostTelegramTradeAlert(body || {})) {
+    return { ok: true, skipped: true, reason: 'not_allowed' };
   }
   const cfg = await resolveTelegramConfig(firebaseReadFn, body || {});
   if (!body?.test && !cfg.enabled) {

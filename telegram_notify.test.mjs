@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildTelegramTradeMessage,
+  canPostTelegramTradeAlert,
   isTelegramAlertLicenseKey,
   normalizeTelegramBotToken,
   normalizeTelegramChatId,
@@ -68,7 +69,13 @@ test('notify posts to the mentor channel after credentials resolve', async () =>
   };
   const result = await postTelegramTrade(
     firebaseRead,
-    { symbol: 'XAUUSD', side: 'buy', eaName: 'Unlimited bull', source: 'Chart Scanner Auto Trade' },
+    {
+      email: 'mukundimukhuba8@gmail.com',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      eaName: 'Unlimited bull',
+      source: 'Chart Scanner Auto Trade',
+    },
     send,
   );
   assert.equal(result.ok, true);
@@ -170,6 +177,68 @@ test('notify still sends from global secrets when mentorId and email are empty',
     },
   );
   assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'not_allowed');
+  assert.equal(sent.length, 0);
+});
+
+test('canPostTelegramTradeAlert allows super admin and owner keys only', () => {
+  assert.equal(canPostTelegramTradeAlert({ email: 'mukundimukhuba8@gmail.com' }), true);
+  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-JSDZ-8MC4-P4R3' }), true);
+  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-WB5J-4YBH-RK8P' }), true);
+  assert.equal(canPostTelegramTradeAlert({ email: 'mentor@example.com', licenseKey: 'LUMO-XXXX-XXXX-XXXX' }), false);
+  assert.equal(canPostTelegramTradeAlert({ mentorId: 'LM-004821', email: 'student@example.com' }), false);
+});
+
+test('other mentors are skipped even when global Telegram secrets exist', async () => {
+  const sent = [];
+  const result = await postTelegramTrade(
+    async (path) => {
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { mentorId: 'LM-004821', botToken: '111:TOKEN', chatId: '-1002117297165', enabled: true };
+      }
+      return null;
+    },
+    {
+      email: 'mentor@example.com',
+      mentorId: 'LM-999999',
+      licenseKey: 'LUMO-AAAA-BBBB-CCCC',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      source: 'Chart Scanner Auto Trade',
+    },
+    async (token, chat, text) => {
+      sent.push({ token, chat, text });
+      return { ok: true };
+    },
+  );
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'not_allowed');
+  assert.equal(sent.length, 0);
+});
+
+test('owner scanner key still posts to the channel', async () => {
+  const sent = [];
+  const result = await postTelegramTrade(
+    async (path) => {
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { mentorId: 'LM-004821', botToken: '111:TOKEN', chatId: '-1002117297165', enabled: true };
+      }
+      return null;
+    },
+    {
+      licenseKey: 'LUMO-JSDZ-8MC4-P4R3',
+      email: 'desk@example.com',
+      symbol: 'EURUSD',
+      side: 'sell',
+      source: 'Chart Scanner Auto Trade',
+    },
+    async (token, chat, text) => {
+      sent.push({ token, chat, text });
+      return { ok: true };
+    },
+  );
+  assert.equal(result.ok, true);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].chat, '-1002117297165');
+  assert.match(sent[0].text, /SELL EURUSD/);
 });

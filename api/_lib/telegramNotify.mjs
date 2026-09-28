@@ -27,6 +27,16 @@ export function isTelegramAlertLicenseKey(licenseKey) {
   return Boolean(key && ALLOWED.has(key));
 }
 
+export const SUPER_ADMIN_EMAIL = 'mukundimukhuba8@gmail.com';
+export const SUPER_ADMIN_ID = 'LM-004821';
+
+/** Only the super admin and the owner scanner keys may post to the shared channel. */
+export function canPostTelegramTradeAlert(input = {}) {
+  const email = String(input.email || '').trim().toLowerCase();
+  if (email === SUPER_ADMIN_EMAIL) return true;
+  return isTelegramAlertLicenseKey(input.licenseKey);
+}
+
 function fmt(v) {
   if (v == null || v === '') return '—';
   return String(v);
@@ -105,9 +115,6 @@ export function normalizeTelegramBotToken(value) {
 export function normalizeTelegramChatId(value) {
   return String(value || '').trim().replace(/\s+/g, '');
 }
-
-const SUPER_ADMIN_EMAIL = 'mukundimukhuba8@gmail.com';
-const SUPER_ADMIN_ID = 'LM-004821';
 
 export async function resolveTelegramConfig(firebaseRead, input = {}) {
   let mentorId = String(input.mentorId || '').trim();
