@@ -30,11 +30,14 @@ export function isTelegramAlertLicenseKey(licenseKey) {
 export const SUPER_ADMIN_EMAIL = 'mukundimukhuba8@gmail.com';
 export const SUPER_ADMIN_ID = 'LM-004821';
 
-/** Only the super admin and the owner scanner keys may post to the shared channel. */
+/** Shared channel is super-admin only. License keys must never admit another mentor. */
 export function canPostTelegramTradeAlert(input = {}) {
   const email = String(input.email || '').trim().toLowerCase();
+  const mentorId = String(input.mentorId || '').trim();
   if (email === SUPER_ADMIN_EMAIL) return true;
-  return isTelegramAlertLicenseKey(input.licenseKey);
+  // Super-admin Telegram settings "Send test" posts mentorId without email.
+  if (input.test && mentorId === SUPER_ADMIN_ID) return true;
+  return false;
 }
 
 function fmt(v) {
@@ -148,15 +151,21 @@ export async function resolveTelegramConfig(firebaseRead, input = {}) {
       profile = null;
     }
   }
+  const allowOwnerChannel =
+    email === SUPER_ADMIN_EMAIL || mentorId === SUPER_ADMIN_ID;
   const token =
     bodyToken ||
     normalizeTelegramBotToken(
-      profile?.telegramBotToken || stored?.botToken || process.env.TELEGRAM_BOT_TOKEN,
+      profile?.telegramBotToken ||
+        (allowOwnerChannel
+          ? stored?.botToken || process.env.TELEGRAM_BOT_TOKEN
+          : ''),
     );
   const chat =
     bodyChat ||
     normalizeTelegramChatId(
-      profile?.telegramChatId || stored?.chatId || process.env.TELEGRAM_CHAT_ID,
+      profile?.telegramChatId ||
+        (allowOwnerChannel ? stored?.chatId || process.env.TELEGRAM_CHAT_ID : ''),
     );
   const enabled =
     input.enabled === false ||

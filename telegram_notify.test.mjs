@@ -182,12 +182,21 @@ test('notify still sends from global secrets when mentorId and email are empty',
   assert.equal(sent.length, 0);
 });
 
-test('canPostTelegramTradeAlert allows super admin and owner keys only', () => {
+test('canPostTelegramTradeAlert allows super admin email only', () => {
   assert.equal(canPostTelegramTradeAlert({ email: 'mukundimukhuba8@gmail.com' }), true);
-  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-JSDZ-8MC4-P4R3' }), true);
-  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-WB5J-4YBH-RK8P' }), true);
-  assert.equal(canPostTelegramTradeAlert({ email: 'mentor@example.com', licenseKey: 'LUMO-XXXX-XXXX-XXXX' }), false);
-  assert.equal(canPostTelegramTradeAlert({ mentorId: 'LM-004821', email: 'student@example.com' }), false);
+  assert.equal(canPostTelegramTradeAlert({ email: 'mukundimukhuba8@gmail.com', licenseKey: 'LUMO-XXXX-XXXX-XXXX' }), true);
+  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-JSDZ-8MC4-P4R3' }), false);
+  assert.equal(canPostTelegramTradeAlert({ licenseKey: 'LUMO-WB5J-4YBH-RK8P' }), false);
+  assert.equal(
+    canPostTelegramTradeAlert({
+      email: 'mentor@example.com',
+      licenseKey: 'LUMO-JSDZ-8MC4-P4R3',
+      mentorId: 'LM-004821',
+    }),
+    false,
+  );
+  assert.equal(canPostTelegramTradeAlert({ test: true, mentorId: 'LM-004821' }), true);
+  assert.equal(canPostTelegramTradeAlert({ test: true, mentorId: 'LM-999999' }), false);
 });
 
 test('other mentors are skipped even when global Telegram secrets exist', async () => {
@@ -238,7 +247,48 @@ test('owner scanner key still posts to the channel', async () => {
       return { ok: true };
     },
   );
-  assert.equal(result.ok, true);
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /SELL EURUSD/);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'not_allowed');
+  assert.equal(sent.length, 0);
+});
+
+test('another mentor with an owner license key cannot use the shared channel', async () => {
+  const sent = [];
+  const result = await postTelegramTrade(
+    async (path) => {
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { mentorId: 'LM-004821', botToken: '111:TOKEN', chatId: '-1002117297165', enabled: true };
+      }
+      return null;
+    },
+    {
+      email: 'other-mentor@example.com',
+      mentorId: 'LM-111111',
+      licenseKey: 'LUMO-JSDZ-8MC4-P4R3',
+      symbol: 'XAUUSD',
+      side: 'buy',
+      source: 'Chart Scanner Auto Trade',
+    },
+    async (token, chat, text) => {
+      sent.push({ token, chat, text });
+      return { ok: true };
+    },
+  );
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'not_allowed');
+  assert.equal(sent.length, 0);
+});
+
+test('other workspaces do not inherit the super-admin Telegram secret', async () => {
+  const cfg = await resolveTelegramConfig(
+    async (path) => {
+      if (path === 'lumo/secrets/telegramAlerts') {
+        return { botToken: '1:GLOBAL', chatId: '-1002117297165', enabled: true };
+      }
+      return null;
+    },
+    { email: 'mentor@example.com', mentorId: 'LM-999999' },
+  );
+  assert.equal(cfg.token, '');
+  assert.equal(cfg.chat, '');
 });
