@@ -24,6 +24,7 @@ import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { handleEmailRoutes } from './email/routes.mjs';
 import { handleWebsiteRoutes } from './websiteRoutes.mjs';
+import { handleTelegramRoutes } from './telegramRoutes.mjs';
 import {
   formatActivityDate,
   loginBlockForActivity,
@@ -180,6 +181,13 @@ export async function handleApi(req, res, pathname) {
       pathname,
     });
     if (emailHandled) return true;
+
+    const telegramHandled = await handleTelegramRoutes(req, res, {
+      json,
+      readBody,
+      pathname,
+    });
+    if (telegramHandled) return true;
 
     const websiteHandled = await handleWebsiteRoutes(req, res, {
       json,

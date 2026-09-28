@@ -90,3 +90,60 @@ export async function sendTelegramMessage(botToken, chatId, text) {
   }
   return { ok: true };
 }
+
+export function normalizeTelegramBotToken(value) {
+  let token = String(value || '').trim();
+  if (!token) return '';
+  const fromUrl = token.match(
+    /(?:https?:\/\/)?api\.telegram\.org\/bot([0-9]+:[A-Za-z0-9_-]+)/i,
+  );
+  if (fromUrl?.[1]) return fromUrl[1].trim();
+  token = token.replace(/^bot/i, '').trim();
+  return token.split('/')[0]?.trim() || token;
+}
+
+export function normalizeTelegramChatId(value) {
+  return String(value || '').trim().replace(/\s+/g, '');
+}
+
+export async function resolveTelegramConfig(firebaseRead, input = {}) {
+  const mentorId = String(input.mentorId || '').trim();
+  const bodyToken = normalizeTelegramBotToken(input.botToken);
+  const bodyChat = normalizeTelegramChatId(input.chatId);
+  let stored = null;
+  let profile = null;
+  try {
+    stored = (await firebaseRead('lumo/secrets/telegramAlerts')) || null;
+  } catch {
+    stored = null;
+  }
+  if (mentorId) {
+    try {
+      profile = (await firebaseRead(`lumo/store/workspaces/${mentorId}/profile`)) || null;
+    } catch {
+      profile = null;
+    }
+  }
+  const token =
+    bodyToken ||
+    normalizeTelegramBotToken(
+      profile?.telegramBotToken || stored?.botToken || process.env.TELEGRAM_BOT_TOKEN,
+    );
+  const chat =
+    bodyChat ||
+    normalizeTelegramChatId(
+      profile?.telegramChatId || stored?.chatId || process.env.TELEGRAM_CHAT_ID,
+    );
+  const enabled =
+    input.enabled === false ||
+    profile?.telegramAlertsEnabled === false ||
+    stored?.enabled === false
+      ? false
+      : true;
+  return {
+    token,
+    chat,
+    enabled,
+    mentorId: mentorId || String(stored?.mentorId || '').trim(),
+  };
+}
