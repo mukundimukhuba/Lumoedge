@@ -130,6 +130,34 @@ test('password reset codes are hashed, single-use, and expire', async () => {
   assert.equal(again.ok, false);
 });
 
+test('Brevo SMTP login prefers smtp-brevo.com over the Gmail sender', async () => {
+  const prev = {
+    key: process.env.BREVO_API_KEY,
+    login: process.env.BREVO_SMTP_LOGIN,
+    sender: process.env.BREVO_SENDER_EMAIL,
+  };
+  process.env.BREVO_API_KEY = `xsmtpsib-${'c'.repeat(80)}`;
+  process.env.BREVO_SENDER_EMAIL = 'lumoedge08@gmail.com';
+  delete process.env.BREVO_SMTP_LOGIN;
+  try {
+    const fallback = await describeEmailConfig();
+    assert.equal(fallback.provider, 'brevo');
+    assert.equal(fallback.transport, 'smtp');
+    assert.equal(fallback.smtpLogin, 'a4e676001@smtp-brevo.com');
+    process.env.BREVO_SMTP_LOGIN = 'a4e676001@smtp-brevo.com';
+    const configured = await describeEmailConfig();
+    assert.equal(configured.smtpLogin, 'a4e676001@smtp-brevo.com');
+    assert.equal(configured.senderEmail, 'lumoedge08@gmail.com');
+  } finally {
+    if (prev.key == null) delete process.env.BREVO_API_KEY;
+    else process.env.BREVO_API_KEY = prev.key;
+    if (prev.login == null) delete process.env.BREVO_SMTP_LOGIN;
+    else process.env.BREVO_SMTP_LOGIN = prev.login;
+    if (prev.sender == null) delete process.env.BREVO_SENDER_EMAIL;
+    else process.env.BREVO_SENDER_EMAIL = prev.sender;
+  }
+});
+
 test('Brevo key shape is classified without exposing the secret', () => {
   const api = describeSecret(`  "xkeysib-${'ab'.repeat(40)}"  `);
   assert.equal(api.kind, 'api');

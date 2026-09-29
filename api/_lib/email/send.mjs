@@ -178,6 +178,7 @@ function resolveSmtpLogins(sender) {
   for (const raw of [
     env('BREVO_SMTP_LOGIN'),
     env('BREVO_SMTP_USER'),
+    'a4e676001@smtp-brevo.com',
     sender?.email,
     'lumoedge08@gmail.com',
     'mukundimukhuba8@gmail.com',
