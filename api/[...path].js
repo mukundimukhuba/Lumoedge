@@ -747,12 +747,21 @@ export default async function handler(req, res) {
 
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
-      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus } = await import(
+      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus, Mt5LevelError } = await import(
         './_lib/mt5Bridge.mjs'
       );
       const MT5_API_BASE = mt5ApiBase();
       const sliced = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
-      const targetPath = await enrichOrderSendPath(`${sliced}${url.search || ''}`);
+      let targetPath;
+      try {
+        targetPath = await enrichOrderSendPath(`${sliced}${url.search || ''}`);
+      } catch (err) {
+        if (err instanceof Mt5LevelError || err?.name === 'Mt5LevelError') {
+          send(res, 400, { error: err.message });
+          return;
+        }
+        throw err;
+      }
       const targetUrl = `${MT5_API_BASE}${targetPath}`;
       const method = req.method || 'GET';
       const body =

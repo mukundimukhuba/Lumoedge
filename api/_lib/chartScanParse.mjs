@@ -284,6 +284,78 @@ export function deriveTakeProfitLadder(direction, entryPrice, stopLoss) {
   };
 }
 
+function tradeSide(direction) {
+  const raw = String(direction || '').trim().toLowerCase();
+  return raw === 'sell' || raw === '1' ? 'sell' : 'buy';
+}
+
+/** Which 1:1 / 1:2 / 1:3 rung this take-profit was built from. */
+export function inferTakeProfitRatio(direction, entryPrice, stopLoss, takeProfit) {
+  const side = tradeSide(direction);
+  const entry = Number(entryPrice);
+  const stop = Number(stopLoss);
+  const tp = Number(takeProfit);
+  const risk = Math.abs(entry - stop);
+  if (!(risk > 0) || !(tp > 0) || !(entry > 0)) return 1;
+  const reward = side === 'sell' ? entry - tp : tp - entry;
+  const ratio = Math.round(reward / risk);
+  return ratio === 2 || ratio === 3 ? ratio : 1;
+}
+
+/**
+ * Market orders fill at the live quote, not the price in the screenshot.
+ * Keep the scanned stop distance and place 1:1, 1:2, 1:3 from that fill.
+ * Skip the order once price is already at the 1:1 target.
+ */
+export function anchorRiskLadder(direction, entryPrice, stopLoss, fillPrice, takeProfit = 0) {
+  const side = tradeSide(direction);
+  const entry = Number(entryPrice);
+  const stop = Number(stopLoss);
+  const fill = Number(fillPrice);
+  if (!(entry > 0) || !(stop > 0) || !(fill > 0)) {
+    return { ok: false, error: 'Missing price for take profit.' };
+  }
+  const decimals = priceDecimals(entry, stop);
+  const entryR = roundScanPrice(entry, decimals);
+  const stopR = roundScanPrice(stop, decimals);
+  const fillR = roundScanPrice(fill, decimals);
+  const risk = roundScanPrice(Math.abs(entryR - stopR), decimals);
+  if (!(risk > 0)) return { ok: false, error: 'Stop distance is zero.' };
+  const tp1 = roundScanPrice(side === 'sell' ? entryR - risk : entryR + risk, decimals);
+  const throughFirst = side === 'sell' ? fillR <= tp1 : fillR >= tp1;
+  if (throughFirst) {
+    return {
+      ok: false,
+      error:
+        side === 'sell'
+          ? 'Price already reached TP1. Sell skipped.'
+          : 'Price already reached TP1. Buy skipped.',
+    };
+  }
+  const anchoredStop = roundScanPrice(side === 'sell' ? fillR + risk : fillR - risk, decimals);
+  if (!(anchoredStop > 0)) return { ok: false, error: 'Stop loss is not valid at this price.' };
+  const ladder = deriveTakeProfitLadder(side, fillR, anchoredStop);
+  const ratio = inferTakeProfitRatio(side, entryR, stopR, takeProfit);
+  const picked = ladder.takeProfits[ratio - 1] || ladder.takeProfit1;
+  if (!(picked > 0) || (side === 'sell' ? picked >= fillR : picked <= fillR)) {
+    return {
+      ok: false,
+      error:
+        side === 'sell'
+          ? 'Price already reached TP. Sell skipped.'
+          : 'Price already reached TP. Buy skipped.',
+    };
+  }
+  return {
+    ok: true,
+    ...ladder,
+    ratio,
+    entry: fillR,
+    stopLoss: anchoredStop,
+    takeProfit: picked,
+  };
+}
+
 export function validateTakeProfit(direction, entryPrice, takeProfit) {
   if (!Number.isFinite(takeProfit) || takeProfit <= 0 || takeProfit === entryPrice) return 0;
   if (direction === 'buy' && takeProfit > entryPrice) return takeProfit;

@@ -3,6 +3,15 @@
  * (ConnectEx / Connect) and proxies account + trade endpoints server-side.
  */
 
+import { anchorRiskLadder } from './chartScanParse.mjs';
+
+export class Mt5LevelError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'Mt5LevelError';
+  }
+}
+
 export const DEFAULT_MT5_API_HOST = '159.203.191.196';
 export const DEFAULT_MT5_API_BASE = `http://${DEFAULT_MT5_API_HOST}`;
 
@@ -415,6 +424,43 @@ async function quoteForSymbol(fetchFn, id, symbol, operation) {
   return priceForOperation(res, operation);
 }
 
+function marketSide(operation) {
+  const op = mapMt5Operation(operation);
+  if (op === '1') return 'sell';
+  if (op === '0') return 'buy';
+  return '';
+}
+
+/** Buy at/above the attached target, or sell at/below it, is already done. */
+export function marketAlreadyThroughTarget(operation, price, takeProfit) {
+  const side = marketSide(operation);
+  const px = Number(price);
+  const tp = Number(takeProfit);
+  if (!side || !(px > 0) || !(tp > 0)) return false;
+  return side === 'sell' ? px <= tp : px >= tp;
+}
+
+function applyFillToLevels(params, livePrice) {
+  const side = marketSide(params.get('operation'));
+  const entry = Number(params.get('entry'));
+  const stopLoss = Number(params.get('stoploss'));
+  const takeProfit = Number(params.get('takeprofit'));
+  params.delete('entry');
+  if (!side || !(livePrice > 0)) return;
+  if (entry > 0 && stopLoss > 0) {
+    const anchored = anchorRiskLadder(side, entry, stopLoss, livePrice, takeProfit);
+    if (!anchored.ok) throw new Mt5LevelError(anchored.error);
+    params.set('stoploss', String(anchored.stopLoss));
+    if (anchored.takeProfit > 0) params.set('takeprofit', String(anchored.takeProfit));
+    return;
+  }
+  if (marketAlreadyThroughTarget(side, livePrice, takeProfit)) {
+    throw new Mt5LevelError(
+      side === 'sell' ? 'Price already reached TP. Sell skipped.' : 'Price already reached TP. Buy skipped.',
+    );
+  }
+}
+
 export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
   const rewritten = rewriteMt5Path(targetPath);
   const qIndex = rewritten.indexOf('?');
@@ -424,6 +470,7 @@ export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
 
   const id = String(params.get('id') || '').trim();
   const requested = String(params.get('symbol') || '').trim();
+  let livePrice = Number(params.get('price')) || 0;
   if (id && requested) {
     let names = [];
     try {
@@ -440,6 +487,7 @@ export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
           const price = await quoteForSymbol(fetchFn, id, symbol, params.get('operation'));
           if (price > 0) {
             params.set('price', String(price));
+            livePrice = price;
             resolved = symbol;
             break;
           }
@@ -449,9 +497,12 @@ export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
       }
     } else if (candidates[0]) {
       resolved = candidates[0];
+      livePrice = existing;
     }
     if (resolved) params.set('symbol', resolved);
   }
+
+  applyFillToLevels(params, livePrice);
 
   if (!params.get('slippage')) params.set('slippage', '100');
   const qs = params.toString();
@@ -536,7 +587,13 @@ async function readUpstreamText(res) {
 
 async function mt5Request(targetPath, timeoutMs = 12000) {
   let lastErr = 'MT5 bridge unreachable';
-  const path = await enrichOrderSendPath(targetPath);
+  let path;
+  try {
+    path = await enrichOrderSendPath(targetPath);
+  } catch (err) {
+    if (err instanceof Mt5LevelError) return { ok: false, error: err.message };
+    throw err;
+  }
   for (const base of mt5Bases()) {
     const targetUrl = `${base}${path}`;
     const ac = new AbortController();

@@ -5,6 +5,7 @@ import {
   DEFAULT_MT5_API_BASE,
   enrichOrderSendPath,
   extractMt5Ticket,
+  Mt5LevelError,
   mapMt5Operation,
   mt5ProxyStatus,
   parseMt5SymbolNames,
@@ -145,4 +146,38 @@ test('OrderSend remaps XAUUSDm before GetQuote', async () => {
   assert.match(path, /symbol=XAUUSD\.m/);
   assert.match(path, /price=2340\.4/);
   assert.equal(seen.some((url) => /\/GetQuote\?/.test(url) && /XAUUSDm/.test(url)), false);
+});
+
+function quoteFetch(ask, bid = ask - 0.003) {
+  return async (url) => {
+    if (/\/SymbolList\?/.test(url) || /\/Symbols\?/.test(url)) {
+      return { status: 200, async json() { return ['USDJPY']; } };
+    }
+    if (/\/GetQuote\?/.test(url)) {
+      return { status: 200, async json() { return { bid, ask }; } };
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+}
+
+test('market buy is not sent after the 1:1 target is already reached', async () => {
+  await assert.rejects(
+    () =>
+      enrichOrderSendPath(
+        '/OrderSend?id=tok&symbol=USDJPY&operation=Buy&volume=0.01&entry=157.331&stoploss=157.290&takeprofit=157.372&slippage=30',
+        quoteFetch(157.375, 157.372),
+      ),
+    (err) => err instanceof Mt5LevelError && /TP1/.test(err.message),
+  );
+});
+
+test('market buy take profits are rebuilt 1:1 1:2 1:3 from the live ask', async () => {
+  const path = await enrichOrderSendPath(
+    '/OrderSend?id=tok&symbol=USDJPY&operation=Buy&volume=0.01&entry=157.331&stoploss=157.290&takeprofit=157.413&slippage=30',
+    quoteFetch(157.35, 157.347),
+  );
+  assert.match(path, /price=157\.35(?:0+)?/);
+  assert.match(path, /stoploss=157\.309/);
+  assert.match(path, /takeprofit=157\.432/);
+  assert.equal(/entry=/.test(path), false);
 });

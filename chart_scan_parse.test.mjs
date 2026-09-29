@@ -6,7 +6,9 @@ import {
   clampScanLot,
   clampScanTrades,
   demoScanLevels,
+  anchorRiskLadder,
   deriveTakeProfit,
+  inferTakeProfitRatio,
   isScanTradeable,
   normalizeScanAccuracy,
   parseChartScanModelText,
@@ -217,4 +219,29 @@ test('OpenAI chat wrapper JSON is parsed for nested scan fields', () => {
   );
   assert.equal(parsed.symbol, 'GBPUSD');
   assert.equal(parsed.take_profit, 1.2632);
+});
+
+test('a buy is skipped once the live price has already reached TP1', () => {
+  const skipped = anchorRiskLadder('buy', 157.331, 157.29, 157.375, 157.372);
+  assert.equal(skipped.ok, false);
+  assert.match(skipped.error, /TP1/);
+});
+
+test('live fill rebuilds 1:1 1:2 1:3 from the same stop distance', () => {
+  const anchored = anchorRiskLadder('buy', 157.331, 157.29, 157.35, 157.372);
+  assert.equal(anchored.ok, true);
+  assert.equal(anchored.entry, 157.35);
+  assert.equal(anchored.stopLoss, 157.309);
+  assert.equal(anchored.takeProfit1, 157.391);
+  assert.equal(anchored.takeProfit2, 157.432);
+  assert.equal(anchored.takeProfit3, 157.473);
+  assert.equal(anchored.takeProfit, 157.391);
+  assert.equal(inferTakeProfitRatio('buy', 157.331, 157.29, 157.413), 2);
+  const second = anchorRiskLadder('buy', 157.331, 157.29, 157.35, 157.413);
+  assert.equal(second.takeProfit, 157.432);
+  const sell = anchorRiskLadder('sell', 157.331, 157.372, 157.3, 157.29);
+  assert.equal(sell.ok, true);
+  assert.equal(sell.stopLoss, 157.341);
+  assert.equal(sell.takeProfit1, 157.259);
+  assert.equal(anchorRiskLadder('sell', 157.331, 157.372, 157.29, 157.29).ok, false);
 });
