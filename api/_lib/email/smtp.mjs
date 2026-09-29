@@ -299,28 +299,59 @@ export async function sendViaBrevoSmtp({
           method,
         });
       } catch (error) {
-        errors.push(`${username}/${method}: ${error instanceof Error ? error.message : 'failed'}`);
+        errors.push(redactSmtpError(`${username}/${method} 587: ${error instanceof Error ? error.message : 'failed'}`, smtpKey));
       }
     }
   }
-  try {
-    return await smtpImplicitTlsSession({
-      host: 'smtp-relay.brevo.com',
-      port: 465,
-      username: users[0],
-      password: smtpKey,
-      fromEmail,
-      to,
-      mime,
-      timeoutMs: 12000,
-      method: 'plain',
-    });
-  } catch (implicitError) {
-    errors.push(`465/plain: ${implicitError instanceof Error ? implicitError.message : 'failed'}`);
+  for (const port of [2525, 465]) {
+    try {
+      if (port === 465) {
+        return await smtpImplicitTlsSession({
+          host: 'smtp-relay.brevo.com',
+          port,
+          username: users[0],
+          password: smtpKey,
+          fromEmail,
+          to,
+          mime,
+          timeoutMs: 12000,
+          method: 'plain',
+        });
+      }
+      return await smtpStartTlsSession({
+        host: 'smtp-relay.brevo.com',
+        port,
+        username: users[0],
+        password: smtpKey,
+        fromEmail,
+        to,
+        mime,
+        timeoutMs: 12000,
+        method: 'login',
+      });
+    } catch (error) {
+      errors.push(redactSmtpError(`${port}: ${error instanceof Error ? error.message : 'failed'}`, smtpKey));
+    }
   }
   return {
     ok: false,
-    error:
-      'Brevo SMTP authentication failed. Add BREVO_SMTP_LOGIN with the SMTP login from Brevo → SMTP & API, or replace BREVO_API_KEY with an API key that starts with xkeysib-.',
+    error: formatSmtpFailure(errors),
   };
+}
+
+function redactSmtpError(text, secret) {
+  let out = headerSafe(text);
+  if (secret) out = out.split(secret).join('[redacted]');
+  return out.slice(0, 180);
+}
+
+export function formatSmtpFailure(errors) {
+  const detail = (Array.isArray(errors) ? errors : [])
+    .map((row) => headerSafe(row).slice(0, 160))
+    .filter(Boolean)
+    .slice(0, 5)
+    .join(' | ');
+  return detail
+    ? `Brevo SMTP failed: ${detail}`
+    : 'Brevo SMTP authentication failed. Use the SMTP key (password) from Brevo → SMTP & API with login a4e676001@smtp-brevo.com.';
 }

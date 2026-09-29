@@ -17,7 +17,7 @@ import {
 import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail } from './api/_lib/email/messages.mjs';
 import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
 import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
-import { buildMime, encodeSubject } from './api/_lib/email/smtp.mjs';
+import { buildMime, encodeSubject, formatSmtpFailure } from './api/_lib/email/smtp.mjs';
 import { listEmailLogs } from './api/_lib/email/log.mjs';
 
 function createIo(admins = []) {
@@ -148,6 +148,10 @@ test('Brevo SMTP login prefers smtp-brevo.com over the Gmail sender', async () =
     const configured = await describeEmailConfig();
     assert.equal(configured.smtpLogin, 'a4e676001@smtp-brevo.com');
     assert.equal(configured.senderEmail, 'lumoedge08@gmail.com');
+    assert.match(
+      formatSmtpFailure(['a4e676001@smtp-brevo.com/login 587: 535 5.7.8 Authentication failed']),
+      /535/,
+    );
   } finally {
     if (prev.key == null) delete process.env.BREVO_API_KEY;
     else process.env.BREVO_API_KEY = prev.key;
