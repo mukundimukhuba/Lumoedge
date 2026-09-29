@@ -15,6 +15,7 @@ import {
   resetCodesMatch,
 } from './api/_lib/passwordReset.mjs';
 import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail } from './api/_lib/email/messages.mjs';
+import { resolveAudienceEmails } from './api/_lib/email/index.mjs';
 import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
 import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
 import { buildMime, encodeSubject, formatSmtpFailure } from './api/_lib/email/smtp.mjs';
@@ -131,6 +132,21 @@ test('password reset codes are hashed, single-use, and expire', async () => {
     { io, now: 22_000 },
   );
   assert.equal(again.ok, false);
+});
+
+test('client broadcast reads the client roster and skips the full workspace store', async () => {
+  const reads = [];
+  const emails = await resolveAudienceEmails('all_clients', async (path) => {
+    reads.push(path);
+    if (path === 'lumo/clients') {
+      return [{ email: 'A@Client.com' }, { email: 'a@client.com' }, { email: 'second@client.com' }, { email: 'bad' }];
+    }
+    if (path === 'lumo/store/workspaces') return { huge: { clientRequests: [{ email: 'should-not-load@x.com' }] } };
+    return null;
+  });
+  assert.deepEqual(emails, ['a@client.com', 'second@client.com']);
+  assert.equal(reads.includes('lumo/store/workspaces'), false);
+  assert.equal(reads.includes('lumo/auth'), false);
 });
 
 test('Brevo SMTP login prefers smtp-brevo.com over the Gmail sender', async () => {

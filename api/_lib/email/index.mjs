@@ -1,6 +1,7 @@
 import {
   isValidEmail,
   sendLumoEmail,
+  sendLumoEmailMany,
   sendResendEmail,
   resolveEmailProvider,
   describeEmailConfig,
@@ -153,48 +154,85 @@ export async function notifyAdminManual(ctx, input) {
  * Collect platform emails for broadcast audiences.
  * @param {'all_mentors'|'all_clients'|'everyone'} audience
  */
+function collectEmails(raw, readEmail) {
+  const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : [];
+  const emails = new Set();
+  for (const row of rows) {
+    const email = isValidEmail(readEmail(row));
+    if (email) emails.add(email);
+  }
+  return emails;
+}
+
 export async function resolveAudienceEmails(audience, firebaseRead) {
+  const wantMentors = audience === 'all_mentors' || audience === 'everyone';
+  const wantClients = audience === 'all_clients' || audience === 'everyone';
   const mentors = new Set();
   const clients = new Set();
 
-  const curAuth = (await firebaseRead('lumo/auth')) || {};
-  const admins = Array.isArray(curAuth.admins)
-    ? curAuth.admins
-    : curAuth.admins && typeof curAuth.admins === 'object'
-      ? Object.values(curAuth.admins)
-      : [];
-  for (const a of admins) {
-    const email = isValidEmail(a?.email);
-    if (email) mentors.add(email);
-  }
-
-  const topClients = (await firebaseRead('lumo/clients')) || {};
-  const clientList = Array.isArray(topClients)
-    ? topClients
-    : typeof topClients === 'object'
-      ? Object.values(topClients)
-      : [];
-  for (const c of clientList) {
-    const email = isValidEmail(c?.email);
-    if (email) clients.add(email);
-  }
-
-  const workspaces = (await firebaseRead('lumo/store/workspaces')) || {};
-  for (const ws of Object.values(workspaces || {})) {
-    if (!ws || typeof ws !== 'object') continue;
-    const reqs = Array.isArray(ws.clientRequests)
-      ? ws.clientRequests
-      : ws.clientRequests && typeof ws.clientRequests === 'object'
-        ? Object.values(ws.clientRequests)
+  if (wantMentors) {
+    const curAuth = (await firebaseRead('lumo/auth')) || {};
+    const admins = Array.isArray(curAuth.admins)
+      ? curAuth.admins
+      : curAuth.admins && typeof curAuth.admins === 'object'
+        ? Object.values(curAuth.admins)
         : [];
-    for (const c of reqs) {
-      const email = isValidEmail(c?.email);
-      if (email) clients.add(email);
-    }
+    for (const email of collectEmails(admins, (row) => row?.email)) mentors.add(email);
+  }
+
+  if (wantClients) {
+    const topClients = (await firebaseRead('lumo/clients')) || [];
+    for (const email of collectEmails(topClients, (row) => row?.email)) clients.add(email);
   }
 
   if (audience === 'all_mentors') return [...mentors];
   if (audience === 'all_clients') return [...clients];
   if (audience === 'everyone') return [...new Set([...mentors, ...clients])];
   return [];
+}
+
+export async function notifyAudience(ctx, input) {
+  const emails = Array.isArray(input?.recipients) ? input.recipients : [];
+  const msg = adminManualEmail({
+    subject: input.subject,
+    messageHtml: input.html,
+    messageText: input.text || input.message,
+  });
+  const batch = await sendLumoEmailMany({
+    recipients: emails,
+    subject: msg.subject,
+    html: msg.html,
+    text: msg.text,
+    firebaseRead: ctx?.firebaseRead,
+  });
+  if (typeof ctx?.firebaseWrite === 'function') {
+    await writeSummaryEmailLog(ctx.firebaseWrite, {
+      subject: msg.subject,
+      sent: batch.sent || 0,
+      failed: batch.failed || 0,
+      total: batch.total || emails.length,
+      error: batch.error || '',
+      provider: batch.provider || '',
+    }).catch(() => {});
+  }
+  return batch;
+}
+
+async function writeSummaryEmailLog(firebaseWrite, entry) {
+  const id = `log-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await firebaseWrite(`lumo/emailLogs/${id}`, {
+    to: `${entry.sent || 0} of ${entry.total || 0} recipients`,
+    type: 'admin_manual',
+    subject: String(entry.subject || ''),
+    status: entry.sent > 0 ? 'sent' : 'failed',
+    idempotencyKey: '',
+    relatedId: '',
+    relatedUserId: '',
+    relatedLicenseId: '',
+    error: entry.failed ? `${entry.failed} failed. ${entry.error || ''}`.trim().slice(0, 500) : '',
+    messageId: '',
+    resendId: '',
+    provider: String(entry.provider || ''),
+    createdAt: new Date().toISOString(),
+  });
 }

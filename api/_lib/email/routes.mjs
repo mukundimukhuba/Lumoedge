@@ -1,6 +1,6 @@
 import { matchSuperPassword, requireSuper, verifyAdminSession } from '../adminSession.mjs';
 import { firebaseRead, firebaseWrite } from '../clientMerge.mjs';
-import { listEmailLogs, notifyAdminManual, resolveAudienceEmails } from './index.mjs';
+import { listEmailLogs, notifyAdminManual, notifyAudience, resolveAudienceEmails } from './index.mjs';
 import { describeEmailConfig, isValidEmail } from './send.mjs';
 
 const TEST_ALLOWLIST = new Set(['mukundimukhuba8@gmail.com', 'lumoedge08@gmail.com']);
@@ -101,24 +101,23 @@ export async function handleEmailRoutes(req, res, ctx) {
     const audience = String(body.audience || '').trim();
     if (audience === 'all_mentors' || audience === 'all_clients' || audience === 'everyone') {
       const emails = await resolveAudienceEmails(audience, firebaseRead);
-      const results = [];
-      for (const to of emails) {
-        results.push(
-          await notifyAdminManual(ctxSend, {
-            to,
-            subject: body.subject,
-            message: body.message,
-            html: body.html,
-          }),
-        );
+      if (!emails.length) {
+        json(res, 400, { ok: false, error: 'No recipient emails found.', sent: 0, failed: 0, total: 0 });
+        return true;
       }
-      const sent = results.filter((row) => row.ok).length;
-      json(res, 200, {
-        ok: sent > 0 || results.length === 0,
-        sent,
-        failed: results.length - sent,
-        total: results.length,
-        results: results.filter((row) => !row.ok),
+      const result = await notifyAudience(ctxSend, {
+        recipients: emails,
+        subject: body.subject,
+        message: body.message,
+        html: body.html,
+      });
+      json(res, result.ok ? 200 : 502, {
+        ok: Boolean(result.ok),
+        sent: result.sent || 0,
+        failed: result.failed || 0,
+        total: result.total || emails.length,
+        error: result.error || '',
+        results: result.results || [],
       });
       return true;
     }

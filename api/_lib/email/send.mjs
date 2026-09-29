@@ -1,4 +1,4 @@
-import { sendViaBrevoSmtp } from './smtp.mjs';
+import { sendManyViaBrevoSmtp, sendViaBrevoSmtp } from './smtp.mjs';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -418,6 +418,63 @@ export async function sendLumoEmail({
       error: error instanceof Error ? error.message : 'Email request failed',
     };
   }
+}
+
+/**
+ * One branded message to many recipients. Reuses the Brevo SMTP session
+ * so a client blast does not open a new connection per address.
+ */
+export async function sendLumoEmailMany({ recipients, subject, html, text, firebaseRead }) {
+  const targets = [...new Set((Array.isArray(recipients) ? recipients : []).map((row) => isValidEmail(row)).filter(Boolean))];
+  if (!targets.length) {
+    return { ok: false, error: 'No recipient emails.', sent: 0, failed: 0, total: 0, results: [] };
+  }
+  const resolved = await resolveEmailProvider(firebaseRead);
+  if (!resolved.apiKey) {
+    return { ok: false, error: 'Email provider is not configured. Set BREVO_API_KEY on the server.', sent: 0, failed: targets.length, total: targets.length, results: [] };
+  }
+  const secret = describeSecret(resolved.apiKey);
+  if (resolved.provider === 'brevo' && secret.truncated) {
+    return { ok: false, provider: 'brevo', error: truncatedKeyError(), sent: 0, failed: targets.length, total: targets.length, results: [] };
+  }
+  const plain =
+    String(text || '').trim() ||
+    String(html || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const subjectLine = String(subject || '').trim() || 'Lumo Edge';
+  const htmlBody = String(html || '');
+  if (resolved.provider === 'brevo' && secret.kind === 'smtp') {
+    const sender = resolveSender();
+    const smtp = await sendManyViaBrevoSmtp({
+      smtpKey: resolved.apiKey,
+      logins: resolveSmtpLogins(sender),
+      sender,
+      recipients: targets,
+      subject: subjectLine,
+      html: htmlBody,
+      text: plain,
+      replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+    });
+    return { ...smtp, provider: 'brevo', transport: 'smtp' };
+  }
+  const results = [];
+  for (const to of targets) {
+    const one = await sendLumoEmail({ to, subject: subjectLine, html: htmlBody, text: plain, firebaseRead });
+    results.push({ to, ok: Boolean(one.ok), error: one.error || '' });
+  }
+  const sent = results.filter((row) => row.ok).length;
+  return {
+    ok: sent > 0,
+    provider: resolved.provider,
+    transport: 'api',
+    sent,
+    failed: targets.length - sent,
+    total: targets.length,
+    results: results.filter((row) => !row.ok).slice(0, 20),
+    error: sent ? '' : results.find((row) => row.error)?.error || 'Email request failed',
+  };
 }
 
 /** Backward-compatible alias used by older callers. */

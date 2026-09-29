@@ -339,6 +339,176 @@ export async function sendViaBrevoSmtp({
   };
 }
 
+async function openAuthedClient({ host, port, username, password, timeoutMs, method, implicit }) {
+  if (implicit) {
+    const secure = await connectTls(host, port, timeoutMs);
+    const client = new SmtpClient(secure, timeoutMs);
+    await client.expect(220);
+    await client.command('EHLO lumoedge.com', 250);
+    await authenticate(client, username, password, method);
+    return client;
+  }
+  const plain = await connectPlain(host, port, timeoutMs);
+  let client = new SmtpClient(plain, timeoutMs);
+  await client.expect(220);
+  await client.command('EHLO lumoedge.com', 250);
+  await client.command('STARTTLS', 220);
+  plain.removeAllListeners('data');
+  plain.removeAllListeners('error');
+  plain.removeAllListeners('end');
+  const secure = await upgradeTls(plain, host, timeoutMs);
+  client = new SmtpClient(secure, timeoutMs);
+  await client.command('EHLO lumoedge.com', 250);
+  await authenticate(client, username, password, method);
+  return client;
+}
+
+/**
+ * Send the same branded message to many recipients on reused SMTP sessions.
+ * One new connection per recipient is what made "send to every client" hit 504.
+ */
+export async function sendManyViaBrevoSmtp({
+  smtpKey,
+  login,
+  logins,
+  sender,
+  recipients,
+  subject,
+  html,
+  text,
+  replyTo,
+}) {
+  const fromEmail = headerSafe(sender?.email);
+  const users = [];
+  const seenUsers = new Set();
+  for (const raw of [login, ...(Array.isArray(logins) ? logins : [])]) {
+    const user = headerSafe(raw);
+    if (!user || seenUsers.has(user.toLowerCase())) continue;
+    seenUsers.add(user.toLowerCase());
+    users.push(user);
+  }
+  const targets = [];
+  const seenTo = new Set();
+  for (const raw of Array.isArray(recipients) ? recipients : []) {
+    const to = headerSafe(raw).toLowerCase();
+    if (!to || seenTo.has(to)) continue;
+    seenTo.add(to);
+    targets.push(to);
+  }
+  if (!users.length || !fromEmail || !smtpKey) {
+    return { ok: false, error: 'Brevo SMTP login or sender is missing.', results: [] };
+  }
+  if (!targets.length) {
+    return { ok: false, error: 'No recipient emails.', results: [] };
+  }
+  const queued = targets.map((to) => ({
+    to,
+    mime: buildMime({
+      fromName: sender?.name || 'Lumo Edge',
+      fromEmail,
+      to,
+      subject,
+      html,
+      text,
+      replyTo,
+    }),
+  }));
+  const username = users[0];
+  const attempts = [
+    { port: 587, method: 'login', implicit: false },
+    { port: 587, method: 'plain', implicit: false },
+    { port: 2525, method: 'login', implicit: false },
+    { port: 465, method: 'plain', implicit: true },
+  ];
+  let client = null;
+  let lastError = '';
+  const openClient = async () => {
+    for (const attempt of attempts) {
+      try {
+        return await openAuthedClient({
+          host: 'smtp-relay.brevo.com',
+          port: attempt.port,
+          username,
+          password: smtpKey,
+          timeoutMs: 20000,
+          method: attempt.method,
+          implicit: attempt.implicit,
+        });
+      } catch (error) {
+        lastError = redactSmtpError(error instanceof Error ? error.message : 'failed', smtpKey);
+      }
+    }
+    return null;
+  };
+  client = await openClient();
+  if (!client) {
+    return { ok: false, error: formatSmtpFailure([lastError]), results: [], sent: 0, failed: targets.length, total: targets.length };
+  }
+  const results = [];
+  try {
+    let index = 0;
+    let retries = 0;
+    while (index < queued.length) {
+      const item = queued[index];
+      try {
+        await client.command(`MAIL FROM:<${fromEmail}>`, 250);
+        await client.command(`RCPT TO:<${item.to}>`, [250, 251]);
+        await client.command('DATA', 354);
+        const done = await client.command(`${dotStuff(item.mime)}${CRLF}.`, 250);
+        const idMatch = String(done.text || '').match(/<[^>]+>/);
+        results.push({ to: item.to, ok: true, id: idMatch ? idMatch[0] : 'smtp' });
+        index += 1;
+        retries = 0;
+        if (index % 60 === 0 && index < queued.length) {
+          await client.write('QUIT').catch(() => {});
+          client.destroy();
+          client = await openClient();
+          if (!client) break;
+        }
+      } catch (error) {
+        const message = redactSmtpError(error instanceof Error ? error.message : 'failed', smtpKey);
+        if (!client.closedError) {
+          results.push({ to: item.to, ok: false, error: message });
+          index += 1;
+          await client.command('RSET', [250]).catch(() => {
+            client.closedError = client.closedError || new Error('SMTP reset failed');
+          });
+        }
+        if (client.closedError) {
+          client.destroy();
+          retries += 1;
+          if (retries > 2) {
+            results.push({ to: item.to, ok: false, error: message });
+            index += 1;
+            retries = 0;
+          }
+          client = await openClient();
+          if (!client) {
+            if (!results.some((row) => row.to === item.to)) {
+              results.push({ to: item.to, ok: false, error: message });
+            }
+            break;
+          }
+        }
+      }
+    }
+  } finally {
+    if (client) {
+      await client.write('QUIT').catch(() => {});
+      client.destroy();
+    }
+  }
+  const sent = results.filter((row) => row.ok).length;
+  return {
+    ok: sent > 0,
+    sent,
+    failed: targets.length - sent,
+    total: targets.length,
+    results: results.filter((row) => !row.ok).slice(0, 20),
+    error: sent ? '' : results.find((row) => row.error)?.error || lastError || 'Brevo SMTP failed',
+  };
+}
+
 function redactSmtpError(text, secret) {
   let out = headerSafe(text);
   if (secret) out = out.split(secret).join('[redacted]');
