@@ -2,7 +2,7 @@
 
 export const CHART_SCAN_PROMPT =
   'You analyze MT5 / trading chart screenshots for institutional-grade trade signals.\n' +
-  'Follow this order: (1) trend, (2) direction aligned to trend, (3) prices that match direction.\n' +
+  'Follow this order: (1) the latest candles on the right edge, (2) direction from those candles only, (3) prices that match that direction.\n' +
   'SYMBOL (highest priority):\n' +
   '- Read the EXACT symbol text from the chart UI (title bar, tab, market watch, or header).\n' +
   '- Copy characters exactly including broker suffixes/prefixes (.m, .M, .pro, .PRO, .std, .STD, .r, .ecn, etc.).\n' +
@@ -10,27 +10,15 @@ export const CHART_SCAN_PROMPT =
   '- Distinguish similar symbols (EURUSD vs GBPUSD, XAUUSD vs XAGUSD, NAS100 vs US100).\n' +
   '- If symbol text is unreadable, set symbol to null and symbol_visible to false.\n' +
   'TIMEFRAME: read only if visible (M1,M5,M15,M30,H1,H4,D1,W1), else null.\n' +
-  'STEP 1 — MARKET STRUCTURE (decide trend_bias first):\n' +
-  '- bullish = visible higher highs AND higher lows, price above rising structure, clear uptrend.\n' +
-  '- bearish = visible lower highs AND lower lows, price below falling structure, clear downtrend.\n' +
-  '- ranging = sideways chop between horizontal support/resistance, no clear HH/HL or LH/LL sequence.\n' +
-  '- Mark swing highs/lows, break of structure (BOS), change of character (CHoCH).\n' +
-  'STEP 2 — DIRECTION (must align with trend_bias unless confirmed CHoCH reversal):\n' +
-  '- trend_bias bullish → direction MUST be buy (pullback to support, bullish BOS, demand retest).\n' +
-  '- trend_bias bearish → direction MUST be sell (rejection at resistance, bearish BOS, supply retest).\n' +
-  '- trend_bias ranging → pick buy at support OR sell at resistance; never counter-trend guess.\n' +
-  '- NEVER output sell on a clearly bullish chart. NEVER output buy on a clearly bearish chart.\n' +
-  '- Counter-trend ONLY when CHoCH is visibly confirmed at a major level — then lower confidence below 70.\n' +
-  'STEP 3 — DO NOT CHOP PEOPLE (skip late and mid-range trades):\n' +
-  '- A completed impulse is not a new trade. If price already dumped and the latest candles are bouncing up, that is LATE — do not sell. If price already rallied and the latest candles are falling back, do not buy.\n' +
-  '- Sell ONLY on a live rejection at supply: a fresh lower high, bearish close, and the last candles pointing down.\n' +
-  '- Buy ONLY on a live hold at demand: a fresh higher low, bullish close, and the last candles pointing up.\n' +
-  '- Middle of the range, sideways chop, doji clusters, or a stop sitting inside the recent swing is NO TRADE.\n' +
-  '- setup_quality is "fresh" only for that live edge reaction. Otherwise use "late", "bounce", or "chop".\n' +
-  '- location is "supply" or "demand" only at that edge. Otherwise "middle".\n' +
-  '- candle_alignment is "with" only when the last candles agree with direction. Use "against" or "mixed" when they do not.\n' +
-  '- swing_range is the visible swing high minus the visible swing low on this screenshot.\n' +
-  '- If setup_quality is not fresh, accuracy_percent MUST be 55-62.\n' +
+  'STEP 1 — RIGHT EDGE ONLY (this is the signal):\n' +
+  '- Look only at the last 5 to 8 candles where the chart ends, on the far right.\n' +
+  '- Those candles rising or closing up → right_edge "up", trend_bias bullish, direction buy.\n' +
+  '- Those candles falling or closing down → right_edge "down", trend_bias bearish, direction sell.\n' +
+  '- Ignore the older move on the left. A drop that already finished, with the latest candles lifting, is a BUY. A rally that already finished, with the latest candles falling, is a SELL.\n' +
+  '- NEVER output sell when the right edge is rising. NEVER output buy when the right edge is falling.\n' +
+  'STEP 2 — LEVELS FOR THAT DIRECTION:\n' +
+  '- BUY: stop_loss below entry, take_profit above entry.\n' +
+  '- SELL: stop_loss above entry, take_profit below entry.\n' +
   'CANDLESTICK & MOMENTUM:\n' +
   '- Recognize engulfing, pin bars, doji indecision, momentum candles, and rejection wicks at S/R.\n' +
   '- Weigh momentum vs exhaustion near structure.\n' +
@@ -52,7 +40,7 @@ export const CHART_SCAN_PROMPT =
   '- Match decimal precision on the scale. If scale unreadable, set entry_price and stop_loss to null.\n' +
   'Before replying, verify: trend_bias, direction, and stop_loss placement all agree.\n' +
   'Reply ONLY compact JSON:\n' +
-  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","trend_bias":"bullish|bearish|ranging","direction":"buy|sell","setup_quality":"fresh|late|bounce|chop","location":"supply|demand|middle","candle_alignment":"with|against|mixed","swing_range":12.4,"accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2351.4,"direction_reason":"brief structure reason","summary":"one concise sentence citing structure + pattern"}';
+  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"H1_or_null","trend_bias":"bullish|bearish|ranging","right_edge":"up|down","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2351.4,"direction_reason":"what the last candles on the right are doing","summary":"one sentence about the right edge only"}';
 
 export function imageSeed(image) {
   let seed = 0;
@@ -97,6 +85,21 @@ export function validateScanPrices(direction, entryPrice, stopLoss) {
   };
 }
 
+/** Direction comes from the latest candles, not the older move on the left. */
+export function rightEdgeDirection(parsed) {
+  const edge = String(parsed?.right_edge || parsed?.latest_move || '').toLowerCase();
+  if (/^up$|rising|bull|higher/.test(edge) || edge === 'buy') return 'buy';
+  if (/^down$|falling|bear|lower/.test(edge) || edge === 'sell') return 'sell';
+  const text = `${parsed?.summary || ''} ${parsed?.direction_reason || ''}`.toLowerCase();
+  const rising = /right edge.{0,24}(up|ris|lift|green|bull)|latest candles.{0,24}(up|ris|green|bull)|bounc|recover/.test(
+    text,
+  );
+  const falling = /right edge.{0,24}(down|fall|red|bear)|latest candles.{0,24}(down|fall|red|bear)/.test(text);
+  if (rising && !falling) return 'buy';
+  if (falling && !rising) return 'sell';
+  return null;
+}
+
 /**
  * Resolve buy/sell with consistency checks against trend_bias and SL placement.
  * Returns { direction, accuracy, corrected, correctionReason }.
@@ -110,6 +113,13 @@ export function resolveScanDirection(parsed, accuracy, image = '') {
   let direction = rawDir.includes('sell') ? 'sell' : 'buy';
   let corrected = false;
   let correctionReason = '';
+  const edge = rightEdgeDirection(parsed);
+  if (edge && edge !== direction) {
+    direction = edge;
+    corrected = true;
+    correctionReason = 'right edge';
+  }
+  const edgeLocked = Boolean(edge);
   const trendBias = normalizeTrendBias(parsed);
 
   const entryPrice = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
@@ -118,18 +128,18 @@ export function resolveScanDirection(parsed, accuracy, image = '') {
 
   const trendDir = trendBias === 'bullish' ? 'buy' : trendBias === 'bearish' ? 'sell' : null;
 
-  // Structure vs stop conflict is not tradeable — do not flip twice and keep a wrong-side SL.
-  if (trendDir && implied && trendDir !== implied) {
+  // The older trend must not flip a right-edge buy into a sell, or the reverse.
+  if (!edgeLocked && trendDir && implied && trendDir !== implied) {
     direction = trendDir;
     corrected = true;
     correctionReason = 'structure vs stop conflict';
     accuracy = Math.min(62, accuracy - 12);
-  } else if (implied && implied !== direction) {
+  } else if (!edgeLocked && implied && implied !== direction) {
     direction = implied;
     corrected = true;
     correctionReason = 'stop_loss placement';
     accuracy = Math.max(55, accuracy - 6);
-  } else if (trendDir && trendDir !== direction) {
+  } else if (!edgeLocked && trendDir && trendDir !== direction) {
     direction = trendDir;
     corrected = true;
     correctionReason = trendDir === 'buy' ? 'bullish structure' : 'bearish structure';
@@ -137,7 +147,7 @@ export function resolveScanDirection(parsed, accuracy, image = '') {
   }
 
   // Summary sanity check when trend_bias missing
-  if (trendBias === 'unknown') {
+  if (!edgeLocked && trendBias === 'unknown') {
     const summary = String(parsed.summary || parsed.direction_reason || '').toLowerCase();
     const bullishCue = /bullish|uptrend|higher high|higher low|demand|support hold|buy bias|long bias/.test(
       summary,
@@ -219,35 +229,16 @@ export const MAX_SCAN_TRADES = 3;
 export const MAX_SCAN_LOT = 1;
 export const MIN_SCAN_LOT = 0.01;
 
-/**
- * Late continuation and mid-range chop are how this scanner was stopping people out.
- * A setup must be a fresh edge reaction with candles in agreement, and the stop
- * must sit outside the recent swing — otherwise it is not a trade.
- */
-export function assessSetup(parsed, direction, entryPrice, stopLoss) {
-  const quality = String(parsed?.setup_quality || '').toLowerCase();
-  const location = String(parsed?.location || '').toLowerCase();
-  const candles = String(parsed?.candle_alignment || '').toLowerCase();
-  const text = `${parsed?.summary || ''} ${parsed?.direction_reason || ''}`.toLowerCase();
-  const reasons = [];
-  if (normalizeTrendBias(parsed || {}) === 'ranging') reasons.push('ranging chop');
-  if (/late|chop|bounce|middle|exhaust|skip/.test(quality)) reasons.push('late or chop');
-  if (candles === 'against' || candles === 'mixed') reasons.push('candles against the trade');
-  if (/middle|mid/.test(location)) reasons.push('mid-range');
-  const atEdge =
-    direction === 'sell' ? /supply|resistance/.test(location) : direction === 'buy' ? /demand|support/.test(location) : false;
-  if (!atEdge) reasons.push('not at the edge');
-  if (candles !== 'with') reasons.push('no candle confirmation');
-  if (!/fresh/.test(quality)) reasons.push('not a fresh setup');
-  if (/continuation/.test(text) && !/reject|lower high|higher low|failed pullback/.test(text)) {
-    reasons.push('late continuation');
-  }
-  if (direction === 'sell' && /bounce|recover/.test(text)) reasons.push('selling a bounce');
-  if (direction === 'buy' && /bounce failed|selling into/.test(text)) reasons.push('buying into weakness');
-  const swing = parsePriceField(parsed, 'swing_range');
-  const risk = Math.abs(Number(entryPrice) - Number(stopLoss));
-  if (swing > 0 && risk > 0 && risk / swing < 0.18) reasons.push('stop inside the noise');
-  return { hold: reasons.length > 0, reasons: [...new Set(reasons)] };
+/** Keep entry, and put the stop on the correct side when the direction was flipped. */
+export function alignStopToDirection(parsed, direction) {
+  const entry = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
+  const stop = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
+  const implied = priceImpliedDirection(entry, stop);
+  if (!implied || implied === direction || !(entry > 0) || !(stop > 0)) return parsed;
+  const risk = Math.abs(entry - stop);
+  const mirrored = direction === 'buy' ? entry - risk : entry + risk;
+  if (!(mirrored > 0)) return parsed;
+  return { ...parsed, entry_price: entry, stop_loss: mirrored, direction };
 }
 
 export function isScanTradeable({ accuracy, pricesValid, symbol, demo } = {}) {
@@ -394,28 +385,23 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
     };
   }
 
-  const prices = resolveScanPrices(parsed, resolved.direction);
+  const priced = alignStopToDirection(parsed, resolved.direction);
+  const prices = resolveScanPrices(priced, resolved.direction);
   if (!prices.pricesValid || resolved.correctionReason === 'structure vs stop conflict') {
     resolved.accuracy = Math.min(resolved.accuracy, 62);
   }
-  if (resolved.corrected) {
+  if (resolved.corrected && resolved.correctionReason !== 'right edge') {
     resolved.accuracy = Math.min(resolved.accuracy, 68);
-  }
-  const setup = assessSetup(parsed, resolved.direction, prices.entryPrice, prices.stopLoss);
-  if (setup.hold) {
-    resolved.accuracy = Math.min(resolved.accuracy, 62);
   }
   const timeframeRaw = parsed.timeframe == null ? '' : String(parsed.timeframe).trim();
   const timeframe =
     !timeframeRaw || /null|unknown|n\/a|none/i.test(timeframeRaw) ? undefined : timeframeRaw;
-  const tradeable =
-    !setup.hold &&
-    isScanTradeable({
-      accuracy: resolved.accuracy,
-      pricesValid: prices.pricesValid,
-      symbol,
-      demo,
-    });
+  const tradeable = isScanTradeable({
+    accuracy: resolved.accuracy,
+    pricesValid: prices.pricesValid,
+    symbol,
+    demo,
+  });
 
   return {
     ok: true,
@@ -424,14 +410,11 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
       ok: true,
       demo,
       tradeable,
-      hold: setup.hold,
       accuracy: resolved.accuracy,
       symbol,
       timeframe,
       direction: resolved.direction,
-      summary: setup.hold
-        ? 'No trade. Price is chopping or the move already finished. Wait for a fresh rejection at supply or a fresh hold at demand.'
-        : parsed.summary || `Scan for ${symbol}`,
+      summary: parsed.summary || `Scan for ${symbol}`,
       entryPrice: omitZero(prices.entryPrice),
       stopLoss: omitZero(prices.stopLoss),
       takeProfit: omitZero(prices.takeProfit),
