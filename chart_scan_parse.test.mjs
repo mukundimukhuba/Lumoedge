@@ -7,6 +7,7 @@ import {
   clampScanTrades,
   demoScanLevels,
   deriveTakeProfit,
+  assessSetup,
   isScanTradeable,
   normalizeScanAccuracy,
   parseChartScanModelText,
@@ -153,6 +154,57 @@ test('structure vs stop conflict is not auto-tradeable', () => {
   assert.equal(result.payload.pricesValid, false);
   assert.equal(result.payload.tradeable, false);
   assert.ok(result.payload.accuracy < 74);
+});
+
+test('a late gold sell into a bounce is not tradeable', () => {
+  const parsed = {
+    symbol: 'XAUUSD',
+    symbol_visible: true,
+    timeframe: 'H1',
+    trend_bias: 'bearish',
+    direction: 'sell',
+    setup_quality: 'bounce',
+    location: 'middle',
+    candle_alignment: 'against',
+    swing_range: 220,
+    accuracy_percent: 78,
+    entry_price: 4161.76,
+    stop_loss: 4185.2,
+    summary: 'Bearish trend with price below resistance, suggesting continuation.',
+  };
+  const setup = assessSetup(parsed, 'sell', 4161.76, 4185.2);
+  assert.equal(setup.hold, true);
+  const result = buildScanResponse(parsed, 'data:image/png;base64,gold');
+  assert.equal(result.payload.ok, true);
+  assert.equal(result.payload.hold, true);
+  assert.equal(result.payload.tradeable, false);
+  assert.ok(result.payload.accuracy < 74);
+  assert.match(result.payload.summary, /No trade/);
+});
+
+test('a fresh supply rejection can still be traded', () => {
+  const result = buildScanResponse(
+    {
+      symbol: 'XAUUSD',
+      symbol_visible: true,
+      timeframe: 'H1',
+      trend_bias: 'bearish',
+      direction: 'sell',
+      setup_quality: 'fresh',
+      location: 'supply',
+      candle_alignment: 'with',
+      swing_range: 80,
+      accuracy_percent: 82,
+      entry_price: 4161.76,
+      stop_loss: 4185.2,
+      summary: 'Rejected a fresh lower high at supply.',
+    },
+    'data:image/png;base64,fresh',
+  );
+  assert.equal(result.payload.hold, false);
+  assert.equal(result.payload.tradeable, true);
+  assert.equal(result.payload.direction, 'sell');
+  assert.ok(result.payload.accuracy >= 74);
 });
 
 test('OpenAI chat wrapper JSON is parsed for nested scan fields', () => {
