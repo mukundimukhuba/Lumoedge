@@ -48,6 +48,9 @@ test('registration and approval emails use the required Lumo Edge copy', () => {
   assert.equal(received.subject, 'Welcome to Lumo Edge — Registration Received');
   assert.match(received.html, /Hi Thabo/);
   assert.match(received.html, /© Lumo Edge. All rights reserved./);
+  assert.match(received.html, /bgcolor="#070b14"/);
+  assert.match(received.html, /lumo-logo-email.png/);
+  assert.match(received.html, /OPEN LUMO EDGE/);
   const approved = mentorApprovedEmail({
     firstName: 'Thabo',
     approvalDate: '2026-09-25',

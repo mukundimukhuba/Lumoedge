@@ -33,19 +33,19 @@ export function renderLumoEmail(input) {
     ctaLabel && ctaUrl
       ? `
       <tr>
-        <td align="center" style="padding:12px 28px 28px;">
+        <td align="center" bgcolor="#10182b" style="padding:8px 28px 28px;background-color:#10182b;">
           <table role="presentation" cellspacing="0" cellpadding="0" border="0">
             <tr>
-              <td align="center" bgcolor="#22d3ee" style="border-radius:999px;background-color:#22d3ee;">
+              <td align="center" bgcolor="#22d3ee" style="background-color:#22d3ee;border-radius:999px;">
                 <a href="${ctaUrl}" target="_blank" rel="noopener noreferrer"
-                   style="display:inline-block;padding:14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#061018;text-decoration:none;border-radius:999px;">
+                   style="display:inline-block;padding:14px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#061018;text-decoration:none;">
                   ${ctaLabel}
                 </a>
               </td>
             </tr>
           </table>
-          <p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#93a4c7;">
-            Or open: <a href="${ctaUrl}" target="_blank" style="color:#60a5fa;word-break:break-all;">${ctaUrl}</a>
+          <p style="margin:14px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:#93a4c7;">
+            Or open: <a href="${ctaUrl}" target="_blank" style="color:#67e8f9;text-decoration:underline;word-break:break-all;">${ctaUrl}</a>
           </p>
         </td>
       </tr>`
@@ -56,38 +56,41 @@ export function renderLumoEmail(input) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
-  <meta name="supported-color-schemes" content="light dark" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="supported-color-schemes" content="dark" />
   <title>${title}</title>
 </head>
-<body style="margin:0;padding:0;background:#070b14;color:#e8eefc;">
+<body bgcolor="#070b14" style="margin:0;padding:0;background-color:#070b14;color:#e8eefc;">
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">${preheader}</div>
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#070b14;padding:24px 12px;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" bgcolor="#070b14" style="background-color:#070b14;">
     <tr>
-      <td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;background:linear-gradient(180deg,#10182b 0%,#0b1020 100%);border:1px solid #1d4ed8;border-radius:18px;box-shadow:0 0 28px rgba(56,189,248,0.18);">
+      <td align="center" bgcolor="#070b14" style="padding:24px 12px;background-color:#070b14;">
+        <table role="presentation" width="560" cellspacing="0" cellpadding="0" border="0" bgcolor="#10182b" style="width:100%;max-width:560px;background-color:#10182b;border:1px solid #1d4ed8;">
           <tr>
-            <td align="center" style="padding:28px 24px 12px;">
+            <td bgcolor="#22d3ee" height="6" style="height:6px;line-height:6px;font-size:0;background-color:#22d3ee;">&nbsp;</td>
+          </tr>
+          <tr>
+            <td align="center" bgcolor="#0b1224" style="padding:28px 24px 18px;background-color:#0b1224;">
               <a href="${APP_HOME_URL}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">
-                <img src="${LOGO_URL}" width="72" height="72" alt="Lumo Edge logo"
-                     style="display:block;width:72px;height:72px;border:0;border-radius:16px;outline:none;text-decoration:none;" />
+                <img src="${LOGO_URL}" width="84" height="84" alt="Lumo Edge"
+                     style="display:block;width:84px;height:84px;border:0;border-radius:18px;outline:none;text-decoration:none;" />
               </a>
-              <div style="font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:800;letter-spacing:0.06em;color:#ffffff;margin-top:14px;">
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:22px;font-weight:800;letter-spacing:0.14em;color:#ffffff;margin-top:16px;">
                 LUMO EDGE
               </div>
-              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#67e8f9;margin-top:4px;letter-spacing:0.08em;text-transform:uppercase;">
-                Premium trading platform
+              <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;color:#67e8f9;margin-top:6px;letter-spacing:0.16em;">
+                TRADING PLATFORM
               </div>
             </td>
           </tr>
           <tr>
-            <td style="padding:8px 28px 8px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#d7e0f5;">
+            <td bgcolor="#10182b" style="padding:22px 28px 8px;background-color:#10182b;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#d7e0f5;">
               ${input.bodyHtml}
             </td>
           </tr>
           ${ctaBlock}
           <tr>
-            <td style="padding:18px 28px 28px;border-top:1px solid #334155;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:#8b9bb8;text-align:center;">
+            <td align="center" bgcolor="#0b1224" style="padding:18px 28px 26px;background-color:#0b1224;border-top:1px solid #1e293b;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#8b9bb8;">
               <strong style="color:#e2e8f0;">© Lumo Edge. All rights reserved.</strong><br/>
               Questions? Contact
               <a href="mailto:${SUPPORT_EMAIL}" style="color:#67e8f9;text-decoration:none;">${SUPPORT_EMAIL}</a><br/>
@@ -103,7 +106,7 @@ export function renderLumoEmail(input) {
 }
 
 export function paragraph(text) {
-  return `<p style="margin:0 0 14px;">${esc(text)}</p>`;
+  return `<p style="margin:0 0 14px;font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#d7e0f5;">${esc(text)}</p>`;
 }
 
 export function licenseKeyBox(key, label = 'Your License Key') {
