@@ -30,16 +30,6 @@ const card = {
   cursor: 'pointer',
 };
 
-function ModeButton({ kicker, title, body, onClick }) {
-  return h(
-    'button',
-    { type: 'button', onClick, style: { ...card, display: 'block', marginBottom: 12 } },
-    h('div', { style: { color: '#67e8f9', fontSize: 11, fontWeight: 800, letterSpacing: '.08em' } }, kicker),
-    h('div', { style: { fontSize: 18, fontWeight: 800, marginTop: 4 } }, title),
-    h('div', { style: { color: '#94a3b8', fontSize: 13, lineHeight: 1.4, marginTop: 6 } }, body),
-  );
-}
-
 function levels(result) {
   if (!result?.entryPrice) return null;
   const side = result.direction === 'sell' ? 'SELL' : 'BUY';
@@ -250,32 +240,31 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
       {
         type: 'button',
         className: 'scan-x',
-        'aria-label': mode === 'pick' ? 'Close' : 'Back',
-        onClick: () => (mode === 'pick' ? onClose() : onPick('pick')),
+        'aria-label': 'Close',
+        onClick: () => onClose(),
       },
-      mode === 'pick' ? '×' : '←',
+      '×',
     ),
-    h('h1', { className: 'scan-title', style: { margin: 0 } }, mode === 'auto' ? 'Auto Scan' : 'Scanner'),
-    h('span', null),
-  );
-
-  if (mode !== 'auto') {
-    return shell([
-      top,
-      h(ModeButton, {
-        kicker: 'MANUAL',
-        title: 'Chart Scanner',
-        body: 'Upload your own market screenshot. AI reads it, then you decide whether to execute.',
+    h('h1', { className: 'scan-title', style: { margin: 0 } }, 'Symbols'),
+    h(
+      'button',
+      {
+        type: 'button',
         onClick: () => onPick('manual'),
-      }),
-      h(ModeButton, {
-        kicker: 'AUTOMATIC',
-        title: 'Auto Scan & Auto Trade',
-        body: 'Select symbols on the list. Set the trades beside each one, then press START.',
-        onClick: () => onPick('auto'),
-      }),
-    ]);
-  }
+        style: {
+          background: 'transparent',
+          border: 0,
+          color: '#67e8f9',
+          font: 'inherit',
+          fontSize: 12,
+          fontWeight: 700,
+          cursor: 'pointer',
+          padding: 0,
+        },
+      },
+      'Chart',
+    ),
+  );
 
   const toggle = (symbol) => {
     setSelected((prev) => {
