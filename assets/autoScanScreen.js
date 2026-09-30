@@ -6,15 +6,16 @@ const h = React.createElement;
 export const AUTO_SYMBOLS = ['XAUUSD', 'US30', 'USTECH', 'GBPUSD', 'EURUSD', 'USDJPY', 'GBPJPY', 'XAGUSD'];
 
 const stepBtn = {
-  width: 36,
-  height: 36,
+  width: 32,
+  height: 32,
   borderRadius: 10,
   border: '1px solid rgba(103,232,249,.45)',
   background: 'rgba(59,130,246,.15)',
   color: '#67e8f9',
   font: 'inherit',
-  fontSize: 20,
+  fontSize: 18,
   fontWeight: 800,
+  cursor: 'pointer',
 };
 
 const card = {
@@ -88,22 +89,109 @@ function levels(result) {
   );
 }
 
-function brokerMatches(list, query) {
+function cleanSymbol(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .slice(0, 32);
+}
+
+function clampTrades(value) {
+  return Math.max(1, Math.min(10, Math.round(Number(value) || 1)));
+}
+
+function symbolRows(list, query) {
   const names = (list || []).map((item) => String(item || '').trim()).filter(Boolean);
+  const source = names.length ? names : AUTO_SYMBOLS;
   const q = String(query || '').trim().toUpperCase();
   const packed = q.replace(/[^A-Z0-9]/g, '');
-  const filtered = !q
-    ? names
-    : names.filter((name) => {
+  let filtered = !q
+    ? source
+    : source.filter((name) => {
         const up = name.toUpperCase();
         return up.includes(q) || up.replace(/[^A-Z0-9]/g, '').includes(packed);
       });
-  return filtered.slice(0, q ? 40 : 16);
+  const typed = cleanSymbol(query);
+  if (typed.length >= 2 && !filtered.some((name) => name.toUpperCase() === typed)) {
+    filtered = [typed, ...filtered];
+  }
+  return filtered.slice(0, q ? 60 : 48);
+}
+
+function SymbolRow({ symbol, trades, busy, onToggle, onTrades }) {
+  const on = trades != null;
+  return h(
+    'div',
+    {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        marginBottom: 8,
+        border: on ? '1px solid #67e8f9' : '1px solid rgba(255,255,255,.1)',
+        background: on ? 'rgba(103,232,249,.08)' : '#0d1118',
+        borderRadius: 12,
+        padding: '10px 10px',
+      },
+    },
+    h(
+      'button',
+      {
+        type: 'button',
+        disabled: busy,
+        onClick: () => onToggle(symbol),
+        'aria-pressed': on,
+        'aria-label': on ? `Remove ${symbol}` : `Select ${symbol}`,
+        style: {
+          flex: 1,
+          textAlign: 'left',
+          background: 'transparent',
+          border: 0,
+          color: '#fff',
+          font: 'inherit',
+          fontWeight: 800,
+          fontSize: 16,
+          cursor: 'pointer',
+          padding: 0,
+        },
+      },
+      symbol,
+    ),
+    on
+      ? h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+          h(
+            'button',
+            {
+              type: 'button',
+              'aria-label': `Fewer trades for ${symbol}`,
+              disabled: busy || trades <= 1,
+              onClick: () => onTrades(symbol, trades - 1),
+              style: stepBtn,
+            },
+            '−',
+          ),
+          h('strong', { style: { minWidth: 18, textAlign: 'center', fontSize: 18 } }, trades),
+          h(
+            'button',
+            {
+              type: 'button',
+              'aria-label': `More trades for ${symbol}`,
+              disabled: busy || trades >= 10,
+              onClick: () => onTrades(symbol, trades + 1),
+              style: stepBtn,
+            },
+            '+',
+          ),
+        )
+      : null,
+  );
 }
 
 export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, result, engine, loadSymbols }) {
-  const [symbol, setSymbol] = React.useState('XAUUSD');
-  const [trades, setTrades] = React.useState(3);
+  const [query, setQuery] = React.useState('');
+  const [selected, setSelected] = React.useState({});
   const [lot, setLot] = React.useState('0.01');
   const [brokerSymbols, setBrokerSymbols] = React.useState([]);
   const [symbolNote, setSymbolNote] = React.useState('');
@@ -112,7 +200,7 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
   React.useEffect(() => {
     if (mode !== 'auto' || typeof loadRef.current !== 'function') return undefined;
     let stop = false;
-    setSymbolNote('Searching the connected broker…');
+    setSymbolNote('Loading symbols from the connected broker…');
     loadRef.current()
       .then((res) => {
         if (stop) return;
@@ -120,26 +208,28 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
         setBrokerSymbols(list);
         setSymbolNote(
           list.length
-            ? `${list.length} symbols on this broker. Type to search, or edit the name.`
+            ? `${list.length} symbols on this broker. Select the ones to trade.`
             : res?.connected === false
-              ? 'Connect MetaTrader to search this broker. You can still type the symbol.'
-              : 'Type the symbol name your broker uses.',
+              ? 'Connect MetaTrader to load this broker. You can still type a symbol and select it.'
+              : 'Type a symbol and select it.',
         );
       })
       .catch(() => {
-        if (!stop) setSymbolNote('Could not read broker symbols. Type the name your platform uses.');
+        if (!stop) setSymbolNote('Could not read broker symbols. Type a name and select it.');
       });
     return () => {
       stop = true;
     };
   }, [mode]);
-  const tradeCount = Math.max(1, Math.min(10, Math.round(Number(trades) || 1)));
-  const plan =
-    tradeCount === 1
-      ? '1 trade opens at TP1.'
-      : tradeCount === 2
-        ? 'Trade 1 → TP1. Trade 2 → TP2.'
-        : `Trade 1 → TP1, Trade 2 → TP2, Trade 3 → TP3${tradeCount > 3 ? '. Extra trades use TP3.' : '.'}`;
+
+  const picks = Object.entries(selected).map(([symbol, trades]) => ({
+    symbol,
+    trades: clampTrades(trades),
+  }));
+  const rows = symbolRows(brokerSymbols, query);
+  const shown = new Set(rows.map((name) => name.toUpperCase()));
+  const pinned = picks.filter((row) => !shown.has(row.symbol.toUpperCase())).map((row) => row.symbol);
+  const list = [...pinned, ...rows];
 
   const shell = (children) =>
     h(
@@ -181,30 +271,49 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
       h(ModeButton, {
         kicker: 'AUTOMATIC',
         title: 'Auto Scan & Auto Trade',
-        body: 'Choose a symbol and how many trades. START scans that market and opens the trades.',
+        body: 'Select symbols on the list. Set the trades beside each one, then press START.',
         onClick: () => onPick('auto'),
       }),
     ]);
   }
 
+  const toggle = (symbol) => {
+    setSelected((prev) => {
+      if (prev[symbol] != null) {
+        const next = { ...prev };
+        delete next[symbol];
+        return next;
+      }
+      return { ...prev, [symbol]: 3 };
+    });
+  };
+  const setTrades = (symbol, value) => {
+    setSelected((prev) => ({ ...prev, [symbol]: clampTrades(value) }));
+  };
+
   return shell([
     top,
-    h('div', { style: { color: '#94a3b8', fontSize: 12, marginBottom: 8 } }, 'Symbol on your broker'),
+    h(
+      'p',
+      { style: { color: '#94a3b8', fontSize: 13, lineHeight: 1.4, margin: '0 0 10px' } },
+      'Select symbols here. The number on the right is how many trades START opens for that symbol.',
+    ),
     h('input', {
-      value: symbol,
+      value: query,
       disabled: busy,
-      onChange: (event) => setSymbol(event.target.value.toUpperCase().replace(/\s+/g, '').slice(0, 32)),
-      placeholder: 'Search or type, e.g. XAUUSD.m',
-      'aria-label': 'Broker symbol',
+      onChange: (event) => setQuery(cleanSymbol(event.target.value)),
+      placeholder: 'Filter or type a broker symbol',
+      'aria-label': 'Filter symbols',
       autoCapitalize: 'characters',
       autoCorrect: 'off',
       spellCheck: false,
       style: {
         ...card,
         marginBottom: 8,
-        fontSize: 18,
-        fontWeight: 800,
+        fontSize: 16,
+        fontWeight: 700,
         outline: 'none',
+        cursor: 'text',
       },
     }),
     symbolNote
@@ -212,125 +321,62 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
       : null,
     h(
       'div',
-      { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 } },
-      AUTO_SYMBOLS.map((item) =>
-        h(
-          'button',
-          {
-            key: item,
-            type: 'button',
-            disabled: busy,
-            onClick: () => setSymbol(item),
-            style: {
-              border: item === symbol ? '1px solid #67e8f9' : '1px solid rgba(255,255,255,.14)',
-              background: '#12121a',
-              color: item === symbol ? '#67e8f9' : '#fff',
-              borderRadius: 999,
-              padding: '6px 10px',
-              font: 'inherit',
-              fontSize: 12,
-              fontWeight: 800,
-            },
-          },
-          item,
-        ),
-      ),
-    ),
-    h(
-      'div',
-      { style: { maxHeight: 180, overflow: 'auto', marginBottom: 14 } },
-      brokerMatches(brokerSymbols, symbol).map((item) =>
-        h(
-          'button',
-          {
-            key: item,
-            type: 'button',
-            disabled: busy,
-            onClick: () => setSymbol(item),
-            style: {
-              display: 'block',
-              width: '100%',
-              textAlign: 'left',
-              marginBottom: 6,
-              border: item === symbol ? '1px solid #67e8f9' : '1px solid rgba(255,255,255,.1)',
-              background: '#0d1118',
-              color: '#fff',
-              borderRadius: 10,
-              padding: '8px 10px',
-              font: 'inherit',
-              fontWeight: 700,
-            },
-          },
-          item,
-        ),
-      ),
-    ),
-    h(
-      'div',
-      { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
-      h(
-        'div',
-        { style: card },
-        h('div', { style: { color: '#94a3b8', fontSize: 11, letterSpacing: '.06em' } }, 'NUMBER OF TRADES'),
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 } },
-          h(
-            'button',
-            {
-              type: 'button',
-              'aria-label': 'Fewer trades',
-              disabled: busy || tradeCount <= 1,
-              onClick: () => setTrades(Math.max(1, tradeCount - 1)),
-              style: stepBtn,
-            },
-            '−',
-          ),
-          h('strong', { style: { fontSize: 28 } }, tradeCount),
-          h(
-            'button',
-            {
-              type: 'button',
-              'aria-label': 'More trades',
-              disabled: busy || tradeCount >= 10,
-              onClick: () => setTrades(Math.min(10, tradeCount + 1)),
-              style: stepBtn,
-            },
-            '+',
-          ),
-        ),
-      ),
-      h(
-        'label',
-        { style: card },
-        h('div', { style: { color: '#94a3b8', fontSize: 11, letterSpacing: '.06em' } }, 'LOT SIZE'),
-        h('input', {
-          value: lot,
-          inputMode: 'decimal',
-          onChange: (event) => setLot(event.target.value.replace(/[^0-9.]/g, '').slice(0, 6)),
-          'aria-label': 'Lot size',
-          style: {
-            width: '100%',
-            marginTop: 6,
-            background: 'transparent',
-            border: 0,
-            color: '#fff',
-            font: 'inherit',
-            fontSize: 28,
-            fontWeight: 800,
-            textAlign: 'center',
-          },
+      { style: { marginBottom: 12 } },
+      list.map((symbol) =>
+        h(SymbolRow, {
+          key: symbol,
+          symbol,
+          trades: selected[symbol],
+          busy,
+          onToggle: toggle,
+          onTrades: setTrades,
         }),
       ),
     ),
-    h('p', { style: { color: '#94a3b8', fontSize: 12, margin: '10px 0 14px' } }, `${symbol} · ${plan}`),
+    h(
+      'label',
+      {
+        style: {
+          ...card,
+          cursor: 'text',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 10,
+        },
+      },
+      h('span', { style: { color: '#94a3b8', fontSize: 12, letterSpacing: '.06em' } }, 'LOT SIZE'),
+      h('input', {
+        value: lot,
+        inputMode: 'decimal',
+        onChange: (event) => setLot(event.target.value.replace(/[^0-9.]/g, '').slice(0, 6)),
+        'aria-label': 'Lot size',
+        style: {
+          width: 96,
+          background: 'transparent',
+          border: 0,
+          color: '#fff',
+          font: 'inherit',
+          fontSize: 22,
+          fontWeight: 800,
+          textAlign: 'right',
+        },
+      }),
+    ),
+    h(
+      'p',
+      { style: { color: '#e2e8f0', fontSize: 13, margin: '0 0 12px', lineHeight: 1.4 } },
+      picks.length
+        ? picks.map((row) => `${row.symbol} × ${row.trades}`).join(' · ')
+        : 'No symbols selected yet.',
+    ),
     h(
       'button',
       {
         type: 'button',
         className: 'scan-execute-btn',
-        disabled: busy || String(symbol || '').trim().length < 2,
-        onClick: () => onStart(String(symbol || '').trim(), tradeCount, lot),
+        disabled: busy || picks.length === 0,
+        onClick: () => onStart(picks, lot),
       },
       busy ? 'WORKING…' : 'START',
     ),
@@ -339,7 +385,7 @@ export function AutoScanScreen({ mode, onPick, onClose, onStart, busy, note, res
     h(
       'p',
       { style: { color: '#64748b', fontSize: 11, marginTop: 14, lineHeight: 1.4 } },
-      'START uses OpenAI on the live candles, then opens every trade in that same direction. The analysis stays the current read for this symbol until price hits the stop or TP1, or 20 minutes pass. A manual scan of the same symbol follows it.',
+      'START scans each selected symbol with OpenAI on the live candles and opens the trades set beside that symbol, all in the same direction. Trade 1 uses TP1, trade 2 uses TP2, trade 3 uses TP3.',
     ),
   ]);
 }
