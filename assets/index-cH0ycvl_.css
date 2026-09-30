@@ -121,3 +121,13 @@ html[data-dock-pin="1"] .os-shell,html[data-dock-pin="1"] .os-shell.os-shell-hom
 html[data-dock-pin="1"] .os-shell-stage,html[data-dock-pin="1"] .os-shell.os-shell-home .os-shell-stage{flex:1 1 auto!important;min-height:0!important;height:100%!important;max-height:100%!important;overflow:hidden!important}
 html[data-dock-pin="1"] .os-shell-panel,html[data-dock-pin="1"] .os-shell.os-shell-home .os-shell-panel{flex:1 1 auto!important;min-height:0!important;height:100%!important;max-height:100%!important;overflow-x:hidden!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;touch-action:pan-y;overscroll-behavior:contain}
 html[data-dock-pin="1"] .os-panel-morph{will-change:auto!important;animation:none!important;filter:none!important;transform:none!important}
+/* hist1: opened-trade history under the EA card */
+.ea-status-stack{width:min(100%,320px);max-height:calc(100dvh - 36px);overflow:auto;display:flex;flex-direction:column;align-items:center;gap:12px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.ea-trade-history{width:100%;text-align:left;background:#080a10f0;border:1px solid rgba(var(--accent-rgb), .42);border-radius:22px;padding:12px 12px 8px;box-shadow:0 0 32px rgba(var(--accent-rgb), .18);max-height:36vh;overflow:auto}
+.ea-trade-history h3{margin:0 0 6px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:rgb(var(--accent-rgb))}
+.ea-trade-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
+.ea-trade-row strong{font-size:13px}
+.ea-trade-meta{color:#94a3b8;font-size:11px;margin-top:2px}
+.ea-trade-buy{color:#4ade80}
+.ea-trade-sell{color:#fb7185}
+.ea-trade-empty{color:#94a3b8;font-size:12px;line-height:1.4;margin:4px 0 8px}
