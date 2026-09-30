@@ -124,6 +124,8 @@ test('XAUUSDm maps to the broker gold symbol that actually exists', () => {
   assert.equal(resolveBrokerSymbol('XAUUSDm', ['GOLD', 'EURUSD']), 'GOLD');
   assert.equal(resolveBrokerSymbol('XAUUSDm', ['XAUUSDm', 'XAUUSD']), 'XAUUSDm');
   assert.equal(resolveBrokerSymbol('XAUUSD', ['XAUUSDm', 'EURUSD']), 'XAUUSDm');
+  assert.equal(resolveBrokerSymbol('USTECH', ['NAS100', 'EURUSD']), 'NAS100');
+  assert.equal(resolveBrokerSymbol('US100', ['USTEC', 'EURUSD']), 'USTEC');
 });
 
 test('OrderSend remaps XAUUSDm before GetQuote', async () => {

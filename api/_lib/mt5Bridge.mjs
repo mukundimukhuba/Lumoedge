@@ -162,8 +162,8 @@ const SYMBOL_ALIAS_GROUPS = [
   ['XAGUSD', 'SILVER', 'XAGUSDM', 'XAGUSD.M', 'SILVER.M'],
   ['BTCUSD', 'BITCOIN', 'BTCUSDM', 'BTCUSD.M'],
   ['ETHUSD', 'ETHEREUM', 'ETHUSDM', 'ETHUSD.M'],
-  ['US30', 'DJ30', 'WALLSTREET30', 'WS30'],
-  ['NAS100', 'USTEC', 'NASDAQ', 'NAS100.M', 'USTEC.M'],
+  ['US30', 'DJ30', 'WALLSTREET30', 'WS30', 'USA30', 'US30CASH'],
+  ['NAS100', 'USTEC', 'USTECH', 'US100', 'NASDAQ', 'NAS100.M', 'USTEC.M', 'US100CASH'],
 ];
 
 export function compactMt5Symbol(value) {

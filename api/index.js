@@ -778,6 +778,16 @@ export default async function handler(req, res) {
 
       const parsed = parseChartScanModelText(raw);
       const result = buildScanResponse(parsed, image, { demo: false });
+      const { reconcileManualScan } = await import('./_lib/autoScan.mjs');
+      const reconciled = await reconcileManualScan(result, body.id);
+      send(res, reconciled.status, reconciled.payload);
+      return;
+    }
+
+    if (pathname === '/api/scan/auto' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { runAutoScan } = await import('./_lib/autoScan.mjs');
+      const result = await runAutoScan(body);
       send(res, result.status, result.payload);
       return;
     }
