@@ -124,7 +124,7 @@ html[data-dock-pin="1"] .os-panel-morph{will-change:auto!important;animation:non
 /* hist1: opened-trade history under the EA card */
 .ea-status-stack{width:min(100%,320px);max-height:calc(100dvh - 36px);overflow:auto;display:flex;flex-direction:column;align-items:center;gap:12px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .ea-trade-history{width:100%;text-align:left;background:#080a10f0;border:1px solid rgba(var(--accent-rgb), .42);border-radius:22px;padding:12px 12px 8px;box-shadow:0 0 32px rgba(var(--accent-rgb), .18);max-height:36vh;overflow:auto}
-.ea-trade-history h3{margin:0 0 6px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:rgb(var(--accent-rgb))}
+.ea-trade-history h3{margin:0 0 6px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:rgb(var(--accent-rgb))}.ea-trade-next{margin-top:12px}
 .ea-trade-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
 .ea-trade-row strong{font-size:13px}
 .ea-trade-meta{color:#94a3b8;font-size:11px;margin-top:2px}
