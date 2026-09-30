@@ -7,6 +7,9 @@ import {
   analysisKey,
   analysisStatus,
   canonicalSymbol,
+  directionBlockedByOpenBook,
+  openBookSide,
+  positionSide,
   formatBarsForModel,
   isSymbolQuery,
   lockPayloadToAnalysis,
@@ -104,6 +107,23 @@ test('auto scan asks for a symbol and a connected account before calling the mod
   assert.match(custom.payload.error, /MetaTrader/i);
   assert.equal(isSymbolQuery('EURUSD.m'), true);
   assert.equal(isSymbolQuery('x'), false);
+});
+
+test('one symbol stays on the side already open', () => {
+  const orders = [
+    { symbol: '.USTECH.mic', orderType: 0 },
+    { symbol: 'XAUUSD.mic', orderType: 1 },
+    { symbol: 'XAUUSD', orderType: 100, comment: 'balance' },
+  ];
+  assert.equal(positionSide({ orderType: 101, comment: 'credit' }), '');
+  assert.equal(openBookSide(orders, 'USTECH'), 'buy');
+  assert.equal(openBookSide(orders, 'NAS100'), 'buy');
+  assert.equal(openBookSide(orders, 'XAUUSD.m'), 'sell');
+  assert.equal(openBookSide(orders, 'EURUSD'), '');
+  assert.equal(directionBlockedByOpenBook('sell', 'buy'), 'This symbol already has BUY trades open, so the SELL was not opened.');
+  assert.equal(directionBlockedByOpenBook('buy', 'buy'), '');
+  assert.match(directionBlockedByOpenBook('buy', 'mixed'), /buy and sell/i);
+  assert.equal(openBookSide([{ symbol: 'XAUUSDm', orderType: 0 }, { symbol: 'GOLD', orderType: 1 }], 'XAUUSD'), 'mixed');
 });
 
 test('candle rows keep the last close as the right edge', () => {

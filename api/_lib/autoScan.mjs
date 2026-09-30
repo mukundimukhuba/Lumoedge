@@ -87,6 +87,47 @@ export function analysisKey(raw) {
   return packed;
 }
 
+export function positionSide(order) {
+  const raw = String(order?.orderType ?? order?.type ?? order?.side ?? '').trim();
+  const text = `${raw} ${order?.symbol || ''} ${order?.comment || ''}`;
+  if (/credit|balance|bonus|charge|correction|commission/i.test(text)) return '';
+  if (/^\d+$/.test(raw)) {
+    const code = Number(raw);
+    if (code === 0) return 'buy';
+    if (code === 1) return 'sell';
+    return '';
+  }
+  const side = raw.toUpperCase().replace(/\s+/g, '');
+  if (side === 'BUY') return 'buy';
+  if (side === 'SELL') return 'sell';
+  return '';
+}
+
+/** Buy and sell on the same market. Empty when the book is flat or unknown. */
+export function openBookSide(orders, symbol) {
+  const key = analysisKey(symbol);
+  if (!key) return '';
+  const sides = new Set();
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (analysisKey(order?.symbol) !== key) continue;
+    const side = positionSide(order);
+    if (side) sides.add(side);
+  }
+  if (sides.size > 1) return 'mixed';
+  if (sides.has('buy')) return 'buy';
+  if (sides.has('sell')) return 'sell';
+  return '';
+}
+
+/** Keep the side already open. A later scan must not add the other direction. */
+export function directionBlockedByOpenBook(direction, openSide) {
+  if (openSide === 'mixed') return 'This symbol already has buy and sell trades open.';
+  if (openSide && direction && openSide !== direction) {
+    return `This symbol already has ${openSide.toUpperCase()} trades open, so the ${direction.toUpperCase()} was not opened.`;
+  }
+  return '';
+}
+
 export function analysisStatus(record, now = Date.now(), price = 0) {
   if (!record || (record.direction !== 'buy' && record.direction !== 'sell')) {
     return { valid: false, reason: 'missing' };
@@ -217,6 +258,43 @@ export async function fetchRecentBars(id, symbol, fetchFn = fetch) {
     if (bars.length >= 8) return { bars: bars.slice(-48), timeframe: frame.label, symbol };
   }
   return { bars: [], timeframe: '', symbol, error: lastError };
+}
+
+function payloadFromAnalysis(record, brokerSymbol) {
+  const direction = record.direction === 'sell' ? 'sell' : 'buy';
+  const takeProfit = Number(record.takeProfit1 || record.takeProfit) || 0;
+  return {
+    ok: true,
+    demo: false,
+    tradeable: true,
+    held: true,
+    accuracy: Number(record.accuracy) || 0,
+    symbol: brokerSymbol,
+    timeframe: record.timeframe || '',
+    direction,
+    summary: record.summary || `Held ${direction.toUpperCase()} while ${analysisKey(brokerSymbol) || brokerSymbol} is still in this trade.`,
+    entryPrice: Number(record.entryPrice) || 0,
+    stopLoss: Number(record.stopLoss) || 0,
+    takeProfit,
+    takeProfit1: takeProfit,
+    takeProfit2: Number(record.takeProfit2) || 0,
+    takeProfit3: Number(record.takeProfit3) || 0,
+    pricesValid: true,
+    source: 'auto',
+    market: record.symbol || analysisKey(brokerSymbol),
+  };
+}
+
+async function fetchOpenedOrders(id, fetchFn) {
+  const res = await readJson(
+    fetchFn,
+    `${mt5ApiBase()}/OpenedOrders?id=${encodeURIComponent(id)}`,
+    12000,
+  );
+  if (res.status !== 200) return null;
+  if (Array.isArray(res.data)) return res.data;
+  if (Array.isArray(res.data?.orders)) return res.data.orders;
+  return [];
 }
 
 async function quotePrice(id, symbol, fetchFn) {
@@ -350,6 +428,21 @@ export async function runAutoScan(body, fetchFn = fetch) {
   if (!brokerSymbol) {
     return { status: 422, payload: { ok: false, error: `${market} is not on this broker account.` } };
   }
+  const opened = await fetchOpenedOrders(id, fetchFn);
+  const openSide = opened ? openBookSide(opened, market) : '';
+  const active = await readSymbolAnalysis(market);
+  const livePrice = await quotePrice(id, active?.brokerSymbol || brokerSymbol, fetchFn);
+  const activeState = analysisStatus(active, Date.now(), livePrice);
+  if (activeState.valid) {
+    const blocked = directionBlockedByOpenBook(active.direction, openSide);
+    if (blocked) {
+      return { status: 200, payload: { ok: false, error: blocked, symbol: brokerSymbol, direction: active.direction } };
+    }
+    const held = payloadFromAnalysis(active, brokerSymbol);
+    if (held.accuracy >= 74 && held.stopLoss > 0 && held.entryPrice > 0) {
+      return { status: 200, payload: held };
+    }
+  }
   let history = await fetchRecentBars(id, brokerSymbol, fetchFn);
   if (!history.bars.length) {
     const names = await loadBrokerSymbolNames(id, fetchFn).catch(() => []);
@@ -416,6 +509,15 @@ export async function runAutoScan(body, fetchFn = fetch) {
     result.payload.source = 'auto';
     result.payload.market = market;
   }
-  if (result.ok && result.payload?.tradeable) await writeSymbolAnalysis(result.payload, 'auto');
+  if (result.ok && result.payload) {
+    const blocked = directionBlockedByOpenBook(result.payload.direction, openSide);
+    if (blocked) {
+      return {
+        status: 200,
+        payload: { ok: false, error: blocked, symbol: brokerSymbol, direction: result.payload.direction },
+      };
+    }
+    if (result.payload.tradeable) await writeSymbolAnalysis(result.payload, 'auto');
+  }
   return result;
 }
