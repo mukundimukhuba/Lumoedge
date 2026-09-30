@@ -49,7 +49,7 @@ test('POST /api/mt5/connect is handled locally instead of proxying a 405', async
 });
 
 test('new MT5 host keeps the old Lumo routes working', () => {
-  assert.equal(DEFAULT_MT5_API_BASE, 'http://159.203.191.196');
+  assert.equal(DEFAULT_MT5_API_BASE, 'http://157.230.1.186:5000');
   assert.equal(mapMt5Operation('Buy'), '0');
   assert.equal(mapMt5Operation('SELL'), '1');
   assert.equal(mapMt5Operation('0'), '0');

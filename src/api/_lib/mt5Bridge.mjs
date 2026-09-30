@@ -1,9 +1,9 @@
 /**
- * MT5 broker bridge — connects through the swagger REST API at 159.203.191.196
+ * MT5 broker bridge — connects through the swagger REST API at 157.230.1.186:5000
  * (ConnectEx / Connect) and proxies account + trade endpoints server-side.
  */
 
-export const DEFAULT_MT5_API_HOST = '159.203.191.196';
+export const DEFAULT_MT5_API_HOST = '157.230.1.186:5000';
 export const DEFAULT_MT5_API_BASE = `http://${DEFAULT_MT5_API_HOST}`;
 
 const PATH_ALIASES = {
