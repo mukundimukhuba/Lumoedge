@@ -19,6 +19,7 @@ import {
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
+import { handleSpecialRoutes } from './specialRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
@@ -153,6 +154,12 @@ export async function handleApi(req, res, pathname) {
       });
       return true;
     }
+
+    const specialHandled = await handleSpecialRoutes(req, res, {
+      json,
+      pathname,
+    });
+    if (specialHandled) return true;
 
     const licenseHandled = await handleLicenseRoutes(req, res, {
       json,
