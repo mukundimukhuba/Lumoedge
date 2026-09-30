@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   CHART_SCAN_PROMPT,
   buildScanResponse,
+  readChartSymbol,
   clampScanLot,
   clampScanTrades,
   demoScanLevels,
@@ -21,6 +22,35 @@ test('scan prompt requires take profit and stop loss', () => {
   assert.match(CHART_SCAN_PROMPT, /take_profit/);
   assert.match(CHART_SCAN_PROMPT, /stop_loss/);
   assert.match(CHART_SCAN_PROMPT, /entry_price/);
+  assert.match(CHART_SCAN_PROMPT, /\.USTECH\./);
+  assert.match(CHART_SCAN_PROMPT, /Never swap those families/);
+});
+
+test('a Nasdaq chart labeled US30.PRO is kept as USTECH', () => {
+  assert.equal(readChartSymbol({ symbol_text: '.USTECH.', symbol: 'US30.PRO' }, 30440), '.USTECH.');
+  const result = buildScanResponse(
+    {
+      symbol: 'US30.PRO',
+      symbol_visible: true,
+      timeframe: 'H1',
+      trend_bias: 'bearish',
+      right_edge: 'down',
+      direction: 'sell',
+      accuracy_percent: 78,
+      entry_price: 30440,
+      stop_loss: 30586.1,
+      summary: 'The right edge shows a downward movement',
+    },
+    'chart',
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.payload.demo, false);
+  assert.equal(result.payload.symbol, 'USTECH');
+  assert.equal(result.payload.entryPrice, 30440);
+});
+
+test('a real Dow price is not rewritten to Nasdaq', () => {
+  assert.equal(readChartSymbol({ symbol: 'US30.PRO' }, 45200), 'US30.PRO');
 });
 
 test('BUY prices keep SL below entry and TP ladder above entry', () => {

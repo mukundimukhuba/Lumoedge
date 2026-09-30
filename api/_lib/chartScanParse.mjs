@@ -4,11 +4,14 @@ export const CHART_SCAN_PROMPT =
   'You analyze MT5 / trading chart screenshots for institutional-grade trade signals.\n' +
   'Follow this order: (1) the latest candles on the right edge, (2) direction from those candles only, (3) prices that match that direction.\n' +
   'SYMBOL (highest priority):\n' +
-  '- Read the EXACT symbol text from the chart UI (title bar, tab, market watch, or header).\n' +
-  '- Copy characters exactly including broker suffixes/prefixes (.m, .M, .pro, .PRO, .std, .STD, .r, .ecn, etc.).\n' +
-  '- Do NOT guess, substitute, or default to XAUUSD/EURUSD unless that exact text is visible.\n' +
-  '- Distinguish similar symbols (EURUSD vs GBPUSD, XAUUSD vs XAGUSD, NAS100 vs US100).\n' +
-  '- If symbol text is unreadable, set symbol to null and symbol_visible to false.\n' +
+  '- Read the EXACT symbol text from the chart header, tab, or market watch. Copy it into symbol_text and symbol.\n' +
+  '- Keep dots and suffixes that are actually printed, including a leading or trailing dot. `.USTECH.` stays `.USTECH.` It is the Nasdaq index.\n' +
+  '- Do NOT guess, substitute, or default to XAUUSD, EURUSD, US30, or US30.PRO unless that exact text is visible.\n' +
+  '- US30, DJ30, and WS30 are the Dow. USTECH, USTEC, NAS100, US100, and NASDAQ are the Nasdaq. Never swap those families.\n' +
+  '- Do not add .PRO, .MIC, or any suffix unless those letters are visible in the header.\n' +
+  '- The digits 3 and 0 must be visible before you output US30. The letters USTECH must be output when the header shows USTECH.\n' +
+  '- Distinguish similar symbols (EURUSD vs GBPUSD, XAUUSD vs XAGUSD, USTECH vs US30).\n' +
+  '- If symbol text is unreadable, set symbol to null, symbol_text to null, and symbol_visible to false.\n' +
   'TIMEFRAME: read only if visible (M1,M5,M15,M30,H1,H4,D1,W1), else null.\n' +
   'STEP 1 — RIGHT EDGE ONLY (this is the signal):\n' +
   '- Look only at the last 5 to 8 candles where the chart ends, on the far right.\n' +
@@ -40,7 +43,7 @@ export const CHART_SCAN_PROMPT =
   '- Match decimal precision on the scale. If scale unreadable, set entry_price and stop_loss to null.\n' +
   'Before replying, verify: trend_bias, direction, and stop_loss placement all agree.\n' +
   'Reply ONLY compact JSON:\n' +
-  '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"H1_or_null","trend_bias":"bullish|bearish|ranging","right_edge":"up|down","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2351.4,"direction_reason":"what the last candles on the right are doing","summary":"one sentence about the right edge only"}';
+  '{"symbol":"EXACT_OR_null","symbol_text":"EXACT_HEADER_OR_null","symbol_visible":true,"timeframe":"H1_or_null","trend_bias":"bullish|bearish|ranging","right_edge":"up|down","direction":"buy|sell","accuracy_percent":77,"entry_price":2345.6,"stop_loss":2339.8,"take_profit":2351.4,"direction_reason":"what the last candles on the right are doing","summary":"one sentence about the right edge only"}';
 
 export function imageSeed(image) {
   let seed = 0;
@@ -432,9 +435,34 @@ function omitZero(value) {
   return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+function cleanHeader(value) {
+  return String(value || '').trim().replace(/\s+/g, '');
+}
+
+function symbolFamily(value) {
+  const compact = cleanHeader(value).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (/^(US30|DJ30|WS30|USA30|DOW)/.test(compact)) return 'dow';
+  if (/^(USTECH|USTEC|NAS100|NASDAQ|US100|NDX)/.test(compact)) return 'nasdaq';
+  return compact;
+}
+
+/** Header text wins. A Dow name on a Nasdaq-sized price is the header misread. */
+export function readChartSymbol(parsed, entryPrice = 0) {
+  const text = cleanHeader(parsed?.symbol_text);
+  const named = cleanHeader(parsed?.symbol);
+  const textOk = text && !/^(null|unknown|n\/a|none)$/i.test(text);
+  const namedOk = named && !/^(null|unknown|n\/a|none)$/i.test(named);
+  let symbol = textOk ? text : namedOk ? named : '';
+  if (textOk && namedOk && symbolFamily(text) !== symbolFamily(named)) symbol = text;
+  const entry = Number(entryPrice);
+  if (symbolFamily(symbol) === 'dow' && entry >= 18000 && entry <= 36000) symbol = 'USTECH';
+  return symbol;
+}
+
 export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
   const symbolVisible = parsed.symbol_visible !== false;
-  let symbol = parsed.symbol == null ? '' : String(parsed.symbol).trim();
+  const hintedEntry = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
+  let symbol = readChartSymbol(parsed, hintedEntry);
   if (!symbolVisible || !symbol || /null|unknown|n\/a|none|guess/i.test(symbol)) {
     return {
       ok: false,
