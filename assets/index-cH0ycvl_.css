@@ -115,3 +115,9 @@ html[data-dock-pin="1"] .os-shell-panel{flex:1 1 auto;min-height:0;overflow-x:hi
 html[data-dock-pin="1"] .os-shell:not(.os-shell-home) .os-shell-panel{padding-bottom:calc(var(--os-dock-h) + 18px)}
 html[data-dock-pin="1"] .os-shell .scan-page{overflow:visible}
 html[data-dock-pin="1"] .os-dock-fixed,html[data-dock-pin="1"][data-layout] .os-dock-fixed,html[data-dock-pin="1"][data-layout=hero]:not([data-dock-reveal="1"]) .os-dock-fixed,html[data-dock-pin="1"][data-layout=hero][data-dock-reveal="1"] .os-dock-fixed{position:fixed!important;left:50%!important;right:auto!important;top:auto!important;bottom:calc(10px + env(safe-area-inset-bottom,0px))!important;transform:translateX(-50%)!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;z-index:80!important;width:min(420px,calc(100vw - 24px))!important;margin:0!important}
+
+/* unfreeze1: the page scrolls, the bottom bar stays put */
+html[data-dock-pin="1"] .os-shell,html[data-dock-pin="1"] .os-shell.os-shell-home{height:100dvh!important;max-height:100dvh!important;min-height:0!important;overflow:hidden!important}
+html[data-dock-pin="1"] .os-shell-stage,html[data-dock-pin="1"] .os-shell.os-shell-home .os-shell-stage{flex:1 1 auto!important;min-height:0!important;height:100%!important;max-height:100%!important;overflow:hidden!important}
+html[data-dock-pin="1"] .os-shell-panel,html[data-dock-pin="1"] .os-shell.os-shell-home .os-shell-panel{flex:1 1 auto!important;min-height:0!important;height:100%!important;max-height:100%!important;overflow-x:hidden!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;touch-action:pan-y;overscroll-behavior:contain}
+html[data-dock-pin="1"] .os-panel-morph{will-change:auto!important;animation:none!important;filter:none!important;transform:none!important}
