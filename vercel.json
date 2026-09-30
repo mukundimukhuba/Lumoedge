@@ -33,7 +33,25 @@
       ]
     },
     {
-      "source": "/assets/index-cH0ycvl_.css",
+      {
+      "source": "/assets/mentorMedia-CMiQEOAO.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/assets/firebaseDb-Da6NOW1w.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    "source": "/assets/index-cH0ycvl_.css",
       "headers": [
         {
           "key": "Cache-Control",
