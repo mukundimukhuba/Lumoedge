@@ -9,7 +9,7 @@ export function tradeCountFor(counts, symbol) {
   const raw = counts?.[name] ?? counts?.[name.toUpperCase()];
   const n = Number(raw);
   if (!Number.isFinite(n)) return 3;
-  return Math.max(1, Math.min(10, Math.round(n)));
+  return Math.max(1, Math.min(50, Math.round(n)));
 }
 
 export function readSymbolTrades(email) {

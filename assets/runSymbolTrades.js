@@ -1,7 +1,7 @@
 import { r as apiUrl } from './apiBase-CDudBPOx.js';
 import { F as matchSymbol, O as mt5Token, m as ladder } from './index-BN3mw-4aa.js';
 import { a as checkConnect, c as brokerSymbols, f as orderSend, i as tradeComment } from './mt5Api-CQ-lx09j.js?v=notp1';
-import { readSymbolTrades, tradeCountFor } from './symbolTrades.js?v=symtrade1';
+import { readSymbolTrades, tradeCountFor } from './symbolTrades.js?v=symtrade2';
 import { loadScannerTelegramPref, notifyMentorTelegramTrade } from './telegramNotify-Dhw55VDM.js';
 
 function sleep(ms) {
