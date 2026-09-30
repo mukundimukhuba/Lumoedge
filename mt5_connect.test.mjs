@@ -173,6 +173,18 @@ test('market buy is not sent after the 1:1 target is already reached', async () 
   );
 });
 
+test('a new START trade still opens after the scanned TP1 with a fresh 1:1 1:2 1:3', async () => {
+  const path = await enrichOrderSendPath(
+    '/OrderSend?id=tok&symbol=USDJPY&operation=Buy&volume=0.01&entry=157.331&stoploss=157.290&takeprofit=157.372&slippage=30&fresh=1',
+    quoteFetch(157.375, 157.372),
+  );
+  assert.match(path, /price=157\.375/);
+  assert.match(path, /stoploss=157\.334/);
+  assert.match(path, /takeprofit=157\.416/);
+  assert.equal(/fresh=/.test(path), false);
+  assert.equal(/entry=/.test(path), false);
+});
+
 test('market buy take profits are rebuilt 1:1 1:2 1:3 from the live ask', async () => {
   const path = await enrichOrderSendPath(
     '/OrderSend?id=tok&symbol=USDJPY&operation=Buy&volume=0.01&entry=157.331&stoploss=157.290&takeprofit=157.413&slippage=30',

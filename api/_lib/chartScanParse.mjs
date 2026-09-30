@@ -305,9 +305,11 @@ export function inferTakeProfitRatio(direction, entryPrice, stopLoss, takeProfit
 /**
  * Market orders fill at the live quote, not the price in the screenshot.
  * Keep the scanned stop distance and place 1:1, 1:2, 1:3 from that fill.
- * Skip the order once price is already at the 1:1 target.
+ * A chart scan skips once price is already at the 1:1 target.
+ * A new START trade is fresh: it always rebuilds that ladder from the live fill.
  */
-export function anchorRiskLadder(direction, entryPrice, stopLoss, fillPrice, takeProfit = 0) {
+export function anchorRiskLadder(direction, entryPrice, stopLoss, fillPrice, takeProfit = 0, options = {}) {
+  const fresh = options?.fresh === true;
   const side = tradeSide(direction);
   const entry = Number(entryPrice);
   const stop = Number(stopLoss);
@@ -323,7 +325,7 @@ export function anchorRiskLadder(direction, entryPrice, stopLoss, fillPrice, tak
   if (!(risk > 0)) return { ok: false, error: 'Stop distance is zero.' };
   const tp1 = roundScanPrice(side === 'sell' ? entryR - risk : entryR + risk, decimals);
   const throughFirst = side === 'sell' ? fillR <= tp1 : fillR >= tp1;
-  if (throughFirst) {
+  if (throughFirst && !fresh) {
     return {
       ok: false,
       error:

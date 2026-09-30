@@ -1,6 +1,6 @@
 import { r as apiUrl } from './apiBase-CDudBPOx.js';
 import { F as matchSymbol, O as mt5Token, m as ladder } from './index-BN3mw-4aa.js';
-import { a as checkConnect, c as brokerSymbols, f as orderSend, i as tradeComment } from './mt5Api-CQ-lx09j.js?v=notp1';
+import { a as checkConnect, c as brokerSymbols, f as orderSend, i as tradeComment } from './mt5Api-CQ-lx09j.js?v=fresh1';
 import { readSymbolTrades, tradeCountFor } from './symbolTrades.js?v=symtrade2';
 import { loadScannerTelegramPref, notifyMentorTelegramTrade } from './telegramNotify-Dhw55VDM.js';
 
@@ -115,11 +115,13 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
               stopLoss: trade.stopLoss || undefined,
               takeProfit: prices[Math.min(n, Math.max(prices.length - 1, 0))] || undefined,
               entry: trade.entry || undefined,
+              fresh: true,
             });
             opened += 1;
             ok = true;
           } catch (err) {
-            error = err instanceof Error ? err.message : 'OrderSend failed';
+            const message = err instanceof Error ? err.message : 'OrderSend failed';
+            error = /trading is disabled/i.test(message) ? 'trading is disabled on this broker' : message;
           }
         }
         if (n < trade.trades - 1) await sleep(250);
@@ -146,7 +148,8 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
           notify: true,
         }).catch(() => null);
       }
-      return `Opened ${opened}/${trade.trades} ${operation} ${symbol}`;
+      const legs = ['TP1 1:1', 'TP2 1:2', 'TP3 1:3'].slice(0, Math.min(opened, 3));
+      return `Opened ${opened}/${trade.trades} ${operation} ${symbol} · ${legs.join(', ')}`;
     },
   });
 }

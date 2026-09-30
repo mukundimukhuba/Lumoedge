@@ -227,6 +227,22 @@ test('a buy is skipped once the live price has already reached TP1', () => {
   assert.match(skipped.error, /TP1/);
 });
 
+test('a new trade rebuilds 1:1 1:2 1:3 from the live price after the old TP1', () => {
+  const fresh = anchorRiskLadder('buy', 157.331, 157.29, 157.375, 157.372, { fresh: true });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.entry, 157.375);
+  assert.equal(fresh.stopLoss, 157.334);
+  assert.equal(fresh.takeProfit1, 157.416);
+  assert.equal(fresh.takeProfit2, 157.457);
+  assert.equal(fresh.takeProfit3, 157.498);
+  assert.equal(fresh.takeProfit, 157.416);
+  const freshSell = anchorRiskLadder('sell', 157.331, 157.372, 157.29, 157.29, { fresh: true });
+  assert.equal(freshSell.ok, true);
+  assert.equal(freshSell.takeProfit1 < 157.29, true);
+  assert.equal(freshSell.takeProfit2 < freshSell.takeProfit1, true);
+  assert.equal(freshSell.takeProfit3 < freshSell.takeProfit2, true);
+});
+
 test('live fill rebuilds 1:1 1:2 1:3 from the same stop distance', () => {
   const anchored = anchorRiskLadder('buy', 157.331, 157.29, 157.35, 157.372);
   assert.equal(anchored.ok, true);

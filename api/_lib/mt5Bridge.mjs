@@ -445,10 +445,12 @@ function applyFillToLevels(params, livePrice) {
   const entry = Number(params.get('entry'));
   const stopLoss = Number(params.get('stoploss'));
   const takeProfit = Number(params.get('takeprofit'));
+  const fresh = params.get('fresh') === '1';
   params.delete('entry');
+  params.delete('fresh');
   if (!side || !(livePrice > 0)) return;
   if (entry > 0 && stopLoss > 0) {
-    const anchored = anchorRiskLadder(side, entry, stopLoss, livePrice, takeProfit);
+    const anchored = anchorRiskLadder(side, entry, stopLoss, livePrice, takeProfit, { fresh });
     if (!anchored.ok) throw new Mt5LevelError(anchored.error);
     params.set('stoploss', String(anchored.stopLoss));
     if (anchored.takeProfit > 0) params.set('takeprofit', String(anchored.takeProfit));
