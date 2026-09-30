@@ -105,7 +105,7 @@ export async function openSelectedTrades({ rows, scan, send, onNote }) {
   const notes = [];
   for (let i = 0; i < list.length; i += 1) {
     const { symbol, trades } = list[i];
-    onNote?.(`Scanning ${symbol} (${i + 1}/${list.length})…`);
+    onNote?.(`Analyzing the market`);
     let data;
     try {
       data = await scan(symbol);
