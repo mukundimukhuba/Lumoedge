@@ -11,6 +11,7 @@ import {
   parseMt5SymbolNames,
   priceForOperation,
   resolveBrokerSymbol,
+  resolveTradeableSymbol,
   rewriteMt5Path,
 } from './api/_lib/mt5Bridge.mjs';
 import { handleApi } from './api/_lib/handlers.mjs';
@@ -126,6 +127,36 @@ test('XAUUSDm maps to the broker gold symbol that actually exists', () => {
   assert.equal(resolveBrokerSymbol('XAUUSD', ['XAUUSDm', 'EURUSD']), 'XAUUSDm');
   assert.equal(resolveBrokerSymbol('USTECH', ['NAS100', 'EURUSD']), 'NAS100');
   assert.equal(resolveBrokerSymbol('US100', ['USTEC', 'EURUSD']), 'USTEC');
+  assert.equal(resolveBrokerSymbol('EURUSD', ['EURUSD.mic', 'XAUUSD.mic']), 'EURUSD.mic');
+  assert.equal(resolveBrokerSymbol('NAS100', ['USTECH.mic', 'EURUSD.mic']), 'USTECH.mic');
+  assert.equal(resolveBrokerSymbol('GBPUSD', ['GBPUSD', 'GBPUSD.mic']), 'GBPUSD');
+});
+
+test('a disabled EURUSD opens on the broker mic name', async () => {
+  const seen = [];
+  const fetchFn = async (url) => {
+    seen.push(url);
+    if (/\/SymbolList\?/.test(url)) {
+      return { status: 200, async json() { return ['EURUSD', 'EURUSD.mic', 'XAUUSD.mic']; } };
+    }
+    if (/\/SymbolParams\?/.test(url)) {
+      const symbol = decodeURIComponent((url.match(/symbol=([^&]+)/) || [])[1] || '');
+      const tradeMode = /\.mic$/i.test(symbol) ? 'Full' : 'Disabled';
+      return { status: 200, async json() { return { symbol: { tradeMode }, symbolGroup: { minLots: 0.01 } }; } };
+    }
+    if (/\/GetQuote\?/.test(url)) {
+      assert.match(url, /symbol=EURUSD\.mic/);
+      return { status: 200, async json() { return { bid: 1.1, ask: 1.1002 }; } };
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  assert.equal(await resolveTradeableSymbol('tok', 'EURUSD', ['EURUSD', 'EURUSD.mic'], fetchFn), 'EURUSD.mic');
+  const path = await enrichOrderSendPath(
+    '/OrderSend?id=tok&symbol=EURUSD&operation=Buy&volume=0.01&fresh=1',
+    fetchFn,
+  );
+  assert.match(path, /symbol=EURUSD\.mic/);
+  assert.equal(seen.some((url) => /\/GetQuote\?/.test(url) && /symbol=EURUSD&/.test(url)), false);
 });
 
 test('OrderSend remaps XAUUSDm before GetQuote', async () => {

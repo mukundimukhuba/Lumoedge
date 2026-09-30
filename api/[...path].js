@@ -757,7 +757,7 @@ export default async function handler(req, res) {
 
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
-      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus, Mt5LevelError } = await import(
+      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus, Mt5LevelError, orderFailureIsDisabled, alternateOrderPath } = await import(
         './_lib/mt5Bridge.mjs'
       );
       const MT5_API_BASE = mt5ApiBase();
@@ -783,12 +783,23 @@ export default async function handler(req, res) {
         headers['Content-Type'] = req.headers['content-type'];
       }
       try {
-        const upstream = await fetch(targetUrl, {
+        let upstream = await fetch(targetUrl, {
           method,
           headers,
           body,
         });
-        const buf = Buffer.from(await upstream.arrayBuffer());
+        let buf = Buffer.from(await upstream.arrayBuffer());
+        if (
+          /^\/OrderSend/i.test(sliced) &&
+          mt5ProxyStatus(upstream.status, buf.toString('utf8')) !== 200 &&
+          orderFailureIsDisabled(buf.toString('utf8'))
+        ) {
+          const alt = await alternateOrderPath(targetPath).catch(() => '');
+          if (alt && alt !== targetPath) {
+            upstream = await fetch(`${MT5_API_BASE}${alt}`, { method, headers, body });
+            buf = Buffer.from(await upstream.arrayBuffer());
+          }
+        }
         const ct = upstream.headers.get('content-type') || 'application/json';
         res.statusCode = mt5ProxyStatus(upstream.status, buf.toString('utf8'));
         res.setHeader('Content-Type', ct);

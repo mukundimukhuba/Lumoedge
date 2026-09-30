@@ -27,6 +27,8 @@ test('auto markets include the front-screen symbols', () => {
 
 test('broker suffixes share one analysis key', () => {
   assert.equal(canonicalSymbol('XAUUSD.m'), 'XAUUSD');
+  assert.equal(canonicalSymbol('XAUUSD.mic'), 'XAUUSD');
+  assert.equal(canonicalSymbol('USTECH.mic'), 'USTECH');
   assert.equal(canonicalSymbol('GOLD'), 'XAUUSD');
   assert.equal(canonicalSymbol('NAS100'), 'USTECH');
   assert.equal(canonicalSymbol('US100.cash'), 'USTECH');

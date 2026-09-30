@@ -4,7 +4,13 @@
  * cannot flip the other way while it is still valid.
  */
 
-import { mt5ApiBase, loadBrokerSymbolNames, resolveBrokerSymbol } from './mt5Bridge.mjs';
+import {
+  mt5ApiBase,
+  loadBrokerSymbolNames,
+  resolveBrokerSymbol,
+  resolveTradeableSymbol,
+  tradeableSymbolCandidates,
+} from './mt5Bridge.mjs';
 import {
   buildScanResponse,
   deriveTakeProfitLadder,
@@ -53,7 +59,7 @@ function compact(raw) {
 }
 
 function stripTail(raw) {
-  return compact(raw).replace(/(CASH|MICRO|MINI|PRO|STD|ECN|RAW|SB|M)$/i, '');
+  return compact(raw).replace(/(CASH|MICRO|MINI|MIC|PRO|STD|ECN|RAW|SB|M)$/i, '');
 }
 
 export function isSymbolQuery(raw) {
@@ -302,13 +308,15 @@ export async function reconcileManualScan(result, mt5Id, fetchFn = fetch) {
 
 async function resolveMarketSymbol(id, requested, fetchFn) {
   const names = await loadBrokerSymbolNames(id, fetchFn).catch(() => []);
-  const resolved = resolveBrokerSymbol(requested, names);
+  const resolved = await resolveTradeableSymbol(id, requested, names, fetchFn);
   if (resolved) return resolved;
   const market = AUTO_MARKETS.find((item) => item.id === canonicalSymbol(requested));
   for (const alias of market?.aliases || [requested]) {
     const hit = resolveBrokerSymbol(alias, names);
     if (hit) return hit;
   }
+  const sibling = tradeableSymbolCandidates(requested, names).find((name) => name && name !== requested);
+  if (sibling) return sibling;
   return names.length ? '' : requested;
 }
 
@@ -338,11 +346,23 @@ export async function runAutoScan(body, fetchFn = fetch) {
       },
     };
   }
-  const brokerSymbol = await resolveMarketSymbol(id, requested, fetchFn);
+  let brokerSymbol = await resolveMarketSymbol(id, requested, fetchFn);
   if (!brokerSymbol) {
     return { status: 422, payload: { ok: false, error: `${market} is not on this broker account.` } };
   }
-  const history = await fetchRecentBars(id, brokerSymbol, fetchFn);
+  let history = await fetchRecentBars(id, brokerSymbol, fetchFn);
+  if (!history.bars.length) {
+    const names = await loadBrokerSymbolNames(id, fetchFn).catch(() => []);
+    for (const alt of tradeableSymbolCandidates(requested, names)) {
+      if (!alt || alt === brokerSymbol) continue;
+      const next = await fetchRecentBars(id, alt, fetchFn);
+      if (next.bars.length) {
+        history = next;
+        brokerSymbol = alt;
+        break;
+      }
+    }
+  }
   if (!history.bars.length) {
     return {
       status: 502,

@@ -88,6 +88,11 @@ export function extractMt5Ticket(payload) {
   return '';
 }
 
+export function orderFailureIsDisabled(payload) {
+  const text = `${mt5ExceptionMessage(payload)} ${typeof payload === 'string' ? payload : ''}`.toLowerCase();
+  return /trading is disabled|trade is disabled|disabled for|symbol is disabled|trade disabled|4089631/.test(text);
+}
+
 export function mt5ExceptionMessage(payload) {
   if (!payload) return '';
   if (typeof payload === 'string') {
@@ -137,6 +142,9 @@ const SYMBOL_WRAPPER_KEYS = new Set([
 
 const SYMBOL_SUFFIXES = [
   '',
+  '.mic',
+  '.MIC',
+  'mic',
   '.M',
   '.m',
   'm',
@@ -173,10 +181,17 @@ export function compactMt5Symbol(value) {
 }
 
 export function stripBrokerSymbolSuffix(value) {
-  return String(value || '')
-    .toUpperCase()
-    .trim()
-    .replace(/[#._-]?(MICRO|MINI|PRO|STD|ECN|RAW|SB|[MICR])$/i, '');
+  let text = String(value || '').toUpperCase().trim();
+  let prev = '';
+  while (text && text !== prev) {
+    prev = text;
+    text = text
+      .replace(/[#._-](MICRO|MINI|MIC|PRO|STD|ECN|RAW|SB|CASH|M|C|R)$/i, '')
+      .replace(/(MICRO|MINI|MIC)$/i, '');
+  }
+  // XAUUSDm keeps the trailing micro flag off the instrument name. SILVER does not.
+  if (/M$/.test(text) && text.length > 6) text = text.slice(0, -1);
+  return text;
 }
 
 function addUniqueName(names, seen, value) {
@@ -387,6 +402,129 @@ export function brokerSymbolCandidates(detected, brokerNames) {
   return out;
 }
 
+function symbolFamilyBases(value) {
+  const bases = new Set();
+  const upper = String(value || '').toUpperCase().trim();
+  if (!upper) return bases;
+  bases.add(compactMt5Symbol(stripBrokerSymbolSuffix(upper)));
+  bases.add(compactMt5Symbol(upper));
+  for (const group of SYMBOL_ALIAS_GROUPS) {
+    const keys = group.map((item) => compactMt5Symbol(item));
+    const hit = [...bases].some((item) => keys.includes(item) || group.includes(item));
+    if (!hit) continue;
+    for (const alias of group) bases.add(compactMt5Symbol(stripBrokerSymbolSuffix(alias)));
+  }
+  bases.delete('');
+  return bases;
+}
+
+/** Exact name plus the broker's .mic / .m sibling for the same instrument. */
+export function tradeableSymbolCandidates(requested, brokerNames) {
+  const names = (brokerNames || []).map((item) => String(item || '').trim()).filter(Boolean);
+  const primary = resolveBrokerSymbol(requested, names);
+  const bases = symbolFamilyBases(requested);
+  if (primary) {
+    for (const item of symbolFamilyBases(primary)) bases.add(item);
+  }
+  const siblings = names.filter((name) => {
+    const base = compactMt5Symbol(stripBrokerSymbolSuffix(name));
+    return bases.has(base) || bases.has(compactMt5Symbol(name));
+  });
+  siblings.sort((a, b) => Number(/\.mic$/i.test(b)) - Number(/\.mic$/i.test(a)));
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    const name = String(value || '').trim();
+    if (!name) return;
+    const key = name.toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  };
+  add(primary);
+  for (const name of siblings) add(name);
+  add(requested);
+  return out;
+}
+
+export function tradeModeAllowsOrder(mode) {
+  const text = String(mode ?? '').trim().toLowerCase();
+  if (!text) return null;
+  if (text === '0' || text.includes('disabled') || text.includes('close')) return false;
+  if (
+    text === '4' ||
+    text === '1' ||
+    text === '2' ||
+    text.includes('full') ||
+    text.includes('long') ||
+    text.includes('short')
+  ) {
+    return true;
+  }
+  return null;
+}
+
+function readTradeMode(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  const info = payload.symbol && typeof payload.symbol === 'object' ? payload.symbol : payload;
+  const group = payload.symbolGroup || payload.group || {};
+  return info.tradeMode ?? info.TradeMode ?? info.trade_mode ?? group.tradeMode ?? group.TradeMode ?? '';
+}
+
+/** Use the account's enabled name. EURUSD stays EURUSD until the broker says that name cannot trade. */
+export async function resolveTradeableSymbol(id, requested, brokerNames, fetchFn = fetch) {
+  const names = Array.isArray(brokerNames) ? brokerNames : [];
+  const choices = tradeableSymbolCandidates(requested, names);
+  const fallback = choices[0] || (names.length ? '' : String(requested || '').trim());
+  if (!id || !choices.length) return fallback;
+  let unknown = '';
+  let sawDisabled = false;
+  for (const symbol of choices.slice(0, 6)) {
+    const params = await fetchMt5Json(
+      fetchFn,
+      `/SymbolParams?id=${encodeURIComponent(id)}&symbol=${encodeURIComponent(symbol)}`,
+    );
+    const allows = tradeModeAllowsOrder(readTradeMode(params));
+    if (allows === true) return symbol;
+    if (allows === false) {
+      sawDisabled = true;
+      continue;
+    }
+    if (!unknown) unknown = symbol;
+  }
+  if (unknown) return unknown;
+  if (sawDisabled) {
+    return choices.find((name) => /\.mic$/i.test(name)) || '';
+  }
+  return fallback;
+}
+
+/** One more send on the .mic name when the plain symbol is turned off. */
+export async function alternateOrderPath(enrichedPath, fetchFn = fetch) {
+  const raw = String(enrichedPath || '');
+  const qIndex = raw.indexOf('?');
+  const path = qIndex >= 0 ? raw.slice(0, qIndex) : raw;
+  if (!/^\/OrderSend(Safe)?$/i.test(path)) return '';
+  const params = new URLSearchParams(qIndex >= 0 ? raw.slice(qIndex + 1) : '');
+  const id = String(params.get('id') || '').trim();
+  const current = String(params.get('symbol') || '').trim();
+  if (!id || !current || /\.mic$/i.test(current)) return '';
+  const names = await loadBrokerSymbolNames(id, fetchFn).catch(() => []);
+  const next = tradeableSymbolCandidates(current, names).find(
+    (name) => name.toUpperCase() !== current.toUpperCase() && /\.mic$/i.test(name),
+  );
+  if (!next) return '';
+  params.set('symbol', next);
+  try {
+    const price = await quoteForSymbol(fetchFn, id, next, params.get('operation'));
+    if (price > 0) params.set('price', String(price));
+  } catch {
+    // Keep the levels already on the request.
+  }
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
 async function fetchMt5Json(fetchFn, path) {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 8000);
@@ -480,25 +618,25 @@ export async function enrichOrderSendPath(targetPath, fetchFn = fetch) {
     } catch {
       names = [];
     }
-    const candidates = brokerSymbolCandidates(requested, names);
-    let resolved = candidates[0] || requested;
+    const candidates = tradeableSymbolCandidates(requested, names);
+    let resolved = (await resolveTradeableSymbol(id, requested, names, fetchFn)) || candidates[0] || requested;
     const existing = Number(params.get('price'));
     if (!(existing > 0)) {
-      for (const symbol of candidates.length ? candidates : [requested]) {
+      const quoteOrder = [resolved, ...candidates.filter((symbol) => symbol !== resolved)];
+      for (const symbol of quoteOrder.length ? quoteOrder : [requested]) {
         try {
           const price = await quoteForSymbol(fetchFn, id, symbol, params.get('operation'));
           if (price > 0) {
             params.set('price', String(price));
             livePrice = price;
-            resolved = symbol;
+            if (symbol === resolved || !resolved) resolved = symbol;
             break;
           }
         } catch {
           // Instant-execution brokers need a price; market-execution can still send without one.
         }
       }
-    } else if (candidates[0]) {
-      resolved = candidates[0];
+    } else if (resolved) {
       livePrice = existing;
     }
     if (resolved) params.set('symbol', resolved);

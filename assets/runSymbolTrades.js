@@ -14,6 +14,72 @@ function clampLot(value) {
   return Math.max(0.01, Math.min(100, n));
 }
 
+function symbolBase(name) {
+  let text = String(name || '').toUpperCase().trim();
+  let prev = '';
+  while (text && text !== prev) {
+    prev = text;
+    text = text
+      .replace(/[#._-](MICRO|MINI|MIC|PRO|STD|ECN|RAW|SB|CASH|M|C|R)$/i, '')
+      .replace(/(MICRO|MINI|MIC)$/i, '');
+  }
+  if (/M$/.test(text) && text.length > 6) text = text.slice(0, -1);
+  return text.replace(/[^A-Z0-9]/g, '');
+}
+
+async function tradeModeAllows(token, symbol) {
+  try {
+    const response = await fetch(
+      apiUrl(`/api/mt5/SymbolParams?id=${encodeURIComponent(token)}&symbol=${encodeURIComponent(symbol)}`),
+    );
+    const data = await response.json();
+    const info = data?.symbol && typeof data.symbol === 'object' ? data.symbol : data || {};
+    const group = data?.symbolGroup || {};
+    const mode = String(info.tradeMode ?? info.TradeMode ?? group.tradeMode ?? group.TradeMode ?? '').toLowerCase();
+    if (!mode) return null;
+    if (mode === '0' || mode.includes('disabled') || mode.includes('close')) return false;
+    if (mode === '4' || mode === '1' || mode === '2' || mode.includes('full') || mode.includes('long') || mode.includes('short')) {
+      return true;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function symbolChoices(requested, matched, brokerList) {
+  const base = symbolBase(matched || requested);
+  const names = (Array.isArray(brokerList) ? brokerList : []).filter((name) => symbolBase(name) === base);
+  names.sort((a, b) => Number(/\.mic$/i.test(b)) - Number(/\.mic$/i.test(a)));
+  const out = [];
+  const seen = new Set();
+  for (const name of [matched, ...names, requested]) {
+    const clean = String(name || '').trim();
+    const key = clean.toUpperCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out.slice(0, 6);
+}
+
+async function openableSymbol(token, choices) {
+  let unknown = '';
+  let sawDisabled = false;
+  for (const name of choices) {
+    const allows = await tradeModeAllows(token, name);
+    if (allows === true) return name;
+    if (allows === false) {
+      sawDisabled = true;
+      continue;
+    }
+    if (!unknown) unknown = name;
+  }
+  if (unknown) return unknown;
+  if (sawDisabled) return choices.find((name) => /\.mic$/i.test(name)) || '';
+  return choices[0] || '';
+}
+
 async function symbolLot(token, symbol, requested) {
   let group = {};
   try {
@@ -106,10 +172,13 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
       return response.json();
     },
     send: async (trade) => {
-      const matched = matchSymbol(trade.symbol, Array.isArray(brokerList) ? brokerList : []);
-      if (!matched.symbol) return `${trade.symbol}: ${matched.message || 'Symbol was not found on this broker.'}`;
-      const symbol = matched.symbol;
-      const lot = await symbolLot(token, symbol, requestedLot);
+      const names = Array.isArray(brokerList) ? brokerList : [];
+      const matched = matchSymbol(trade.symbol, names);
+      const choices = symbolChoices(trade.symbol, matched.symbol, names);
+      let symbol = await openableSymbol(token, choices);
+      if (!symbol) return `${trade.symbol}: ${matched.message || 'Trading is disabled on this broker.'}`;
+      let lot = await symbolLot(token, symbol, requestedLot);
+      let choiceIndex = Math.max(0, choices.indexOf(symbol));
       const prices = ladder(trade.entry, trade.stopLoss, trade.direction, 3);
       const operation = trade.direction === 'sell' ? 'Sell' : 'Buy';
       const comment = tradeComment(eaName);
@@ -117,14 +186,16 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
       let error = '';
       for (let n = 0; n < trade.trades; n += 1) {
         let ok = false;
-        for (let attempt = 0; attempt < 2 && !ok; attempt += 1) {
+        for (let attempt = 0; attempt < choices.length && !ok; attempt += 1) {
+          const current = choices[Math.min(choiceIndex, choices.length - 1)] || symbol;
+          const currentLot = current === symbol ? lot : await symbolLot(token, current, requestedLot);
           try {
             if (attempt) await sleep(400);
             await orderSend({
               id: token,
-              symbol,
+              symbol: current,
               operation,
-              volume: lot,
+              volume: currentLot,
               comment,
               slippage: 30,
               stopLoss: trade.stopLoss || undefined,
@@ -132,15 +203,23 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
               entry: trade.entry || undefined,
               fresh: true,
             });
+            symbol = current;
+            lot = currentLot;
             opened += 1;
             ok = true;
           } catch (err) {
             const message = err instanceof Error ? err.message : 'OrderSend failed';
+            const disabled = /trading is disabled|trade is disabled|4089631/i.test(message);
             error = /invalid volume/i.test(message)
-              ? `invalid volume at lot ${lot}`
-              : /trading is disabled/i.test(message)
+              ? `invalid volume at lot ${currentLot}`
+              : disabled
                 ? 'trading is disabled on this broker'
                 : message;
+            if (disabled && choiceIndex < choices.length - 1) {
+              choiceIndex += 1;
+              continue;
+            }
+            break;
           }
         }
         if (n < trade.trades - 1) await sleep(250);
