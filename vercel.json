@@ -33,7 +33,6 @@
       ]
     },
     {
-      {
       "source": "/assets/mentorMedia-CMiQEOAO.js",
       "headers": [
         {
@@ -51,7 +50,8 @@
         }
       ]
     },
-    "source": "/assets/index-cH0ycvl_.css",
+    {
+      "source": "/assets/index-cH0ycvl_.css",
       "headers": [
         {
           "key": "Cache-Control",
