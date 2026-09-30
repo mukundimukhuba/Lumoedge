@@ -33,6 +33,15 @@
       ]
     },
     {
+      "source": "/assets/index-cH0ycvl_.css",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    },
+    {
       "source": "/assets/index-BN3mw-4aa.js",
       "headers": [
         {

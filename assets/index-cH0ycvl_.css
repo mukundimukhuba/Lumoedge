@@ -106,3 +106,12 @@ html[data-pro="1"] .mt5-cyber .mt5-card,html[data-pro="1"] .symbols-shell .symbo
 .desk-ticket .te-popup-progress{background:#ffffff14;border-radius:99px;height:4px}
 .desk-ticket .te-popup-progress-fill{background:linear-gradient(90deg,#f5d76e,#d4a017);border-radius:99px}
 .desk-ticket .te-popup-pct{color:#f8e7b0}
+
+html[data-dock-pin="1"],html[data-dock-pin="1"] body{height:100%;overflow:hidden}
+html[data-dock-pin="1"] #root,html[data-dock-pin="1"] .app-shell.lumo-app{height:100dvh;max-height:100dvh;overflow:hidden}
+html[data-dock-pin="1"] .os-shell{height:100dvh;max-height:100dvh;min-height:0;overflow:hidden}
+html[data-dock-pin="1"] .os-shell-stage{flex:1 1 auto;min-height:0;overflow:hidden}
+html[data-dock-pin="1"] .os-shell-panel{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch}
+html[data-dock-pin="1"] .os-shell:not(.os-shell-home) .os-shell-panel{padding-bottom:calc(var(--os-dock-h) + 18px)}
+html[data-dock-pin="1"] .os-shell .scan-page{overflow:visible}
+html[data-dock-pin="1"] .os-dock-fixed,html[data-dock-pin="1"][data-layout] .os-dock-fixed,html[data-dock-pin="1"][data-layout=hero]:not([data-dock-reveal="1"]) .os-dock-fixed,html[data-dock-pin="1"][data-layout=hero][data-dock-reveal="1"] .os-dock-fixed{position:fixed!important;left:50%!important;right:auto!important;top:auto!important;bottom:calc(10px + env(safe-area-inset-bottom,0px))!important;transform:translateX(-50%)!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;z-index:80!important;width:min(420px,calc(100vw - 24px))!important;margin:0!important}
