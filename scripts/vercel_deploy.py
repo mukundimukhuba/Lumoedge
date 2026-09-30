@@ -74,6 +74,7 @@ def walk_add(local_root, deploy_root):
 
 for name in (
     "index.html",
+    "special.html",
     "lumo-logo.png",
     "lumo-logo-192.png",
     "lumo-logo-email.png",

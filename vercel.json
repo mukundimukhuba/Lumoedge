@@ -9,6 +9,10 @@
       "destination": "/api?__path=$1"
     },
     {
+      "source": "/special",
+      "destination": "/special.html"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
