@@ -8,6 +8,7 @@ import {
   analysisStatus,
   canonicalSymbol,
   formatBarsForModel,
+  isSymbolQuery,
   lockPayloadToAnalysis,
   normalizeBars,
   runAutoScan,
@@ -96,6 +97,11 @@ test('auto scan asks for a symbol and a connected account before calling the mod
   const noAccount = await runAutoScan({ symbol: 'XAUUSD' });
   assert.equal(noAccount.status, 400);
   assert.match(noAccount.payload.error, /MetaTrader/i);
+  const custom = await runAutoScan({ symbol: 'GER40.cash' });
+  assert.equal(custom.status, 400);
+  assert.match(custom.payload.error, /MetaTrader/i);
+  assert.equal(isSymbolQuery('EURUSD.m'), true);
+  assert.equal(isSymbolQuery('x'), false);
 });
 
 test('candle rows keep the last close as the right edge', () => {

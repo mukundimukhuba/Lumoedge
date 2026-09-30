@@ -56,6 +56,10 @@ function stripTail(raw) {
   return compact(raw).replace(/(CASH|MICRO|MINI|PRO|STD|ECN|RAW|SB|M)$/i, '');
 }
 
+export function isSymbolQuery(raw) {
+  return /^[A-Za-z0-9._#-]{2,32}$/.test(String(raw || '').trim());
+}
+
 export function canonicalSymbol(raw) {
   const packed = compact(raw);
   const base = stripTail(raw);
@@ -310,9 +314,8 @@ async function resolveMarketSymbol(id, requested, fetchFn) {
 
 export async function runAutoScan(body, fetchFn = fetch) {
   const requested = String(body?.symbol || body?.canonical || '').trim();
-  const market = canonicalSymbol(requested);
-  if (!market) {
-    return { status: 400, payload: { ok: false, error: 'Choose a symbol from the list.' } };
+  if (!isSymbolQuery(requested)) {
+    return { status: 400, payload: { ok: false, error: 'Type the symbol from your broker.' } };
   }
   const id = String(body?.id || '').trim();
   if (!id) {
@@ -321,6 +324,7 @@ export async function runAutoScan(body, fetchFn = fetch) {
       payload: { ok: false, error: 'Connect MetaTrader first. Auto Scan reads the live market on your account.' },
     };
   }
+  const market = canonicalSymbol(requested) || requested.toUpperCase();
   const config = await loadChartScanConfig();
   if (!config.apiKey) {
     return {
@@ -334,7 +338,7 @@ export async function runAutoScan(body, fetchFn = fetch) {
       },
     };
   }
-  const brokerSymbol = await resolveMarketSymbol(id, market, fetchFn);
+  const brokerSymbol = await resolveMarketSymbol(id, requested, fetchFn);
   if (!brokerSymbol) {
     return { status: 422, payload: { ok: false, error: `${market} is not on this broker account.` } };
   }
