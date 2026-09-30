@@ -1,7 +1,7 @@
 import { r as apiUrl } from './apiBase-CDudBPOx.js';
 import { F as matchSymbol, O as mt5Token, m as ladder } from './index-BN3mw-4aa.js';
 import { a as checkConnect, c as brokerSymbols, f as orderSend, i as tradeComment } from './mt5Api-CQ-lx09j.js?v=fresh1';
-import { readSymbolTrades, tradeCountFor } from './symbolTrades.js?v=symtrade2';
+import { readSymbolTrades, snapLot, tradeCountFor } from './symbolTrades.js?v=symedit1';
 import { loadScannerTelegramPref, notifyMentorTelegramTrade } from './telegramNotify-Dhw55VDM.js';
 
 function sleep(ms) {
@@ -11,7 +11,21 @@ function sleep(ms) {
 function clampLot(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0.01;
-  return Math.max(0.01, Math.min(1, n));
+  return Math.max(0.01, Math.min(100, n));
+}
+
+async function symbolLot(token, symbol, requested) {
+  let group = {};
+  try {
+    const response = await fetch(
+      apiUrl(`/api/mt5/SymbolParams?id=${encodeURIComponent(token)}&symbol=${encodeURIComponent(symbol)}`),
+    );
+    const data = await response.json();
+    group = data?.symbolGroup || {};
+  } catch {
+    group = {};
+  }
+  return snapLot(requested, group);
 }
 
 export async function openSelectedTrades({ rows, scan, send, onNote }) {
@@ -78,7 +92,7 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
     return 'MetaTrader session expired. Reconnect, then press START again.';
   }
   const brokerList = await brokerSymbols(token).catch(() => []);
-  const lot = clampLot(saved.lot);
+  const requestedLot = clampLot(saved.lot);
   const notify = String(email || '').toLowerCase() === 'mukundimukhuba8@gmail.com' && loadScannerTelegramPref(email) !== false;
   return openSelectedTrades({
     rows: names.map((symbol) => ({ symbol, trades: tradeCountFor(saved.counts, symbol) })),
@@ -95,6 +109,7 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
       const matched = matchSymbol(trade.symbol, Array.isArray(brokerList) ? brokerList : []);
       if (!matched.symbol) return `${trade.symbol}: ${matched.message || 'Symbol was not found on this broker.'}`;
       const symbol = matched.symbol;
+      const lot = await symbolLot(token, symbol, requestedLot);
       const prices = ladder(trade.entry, trade.stopLoss, trade.direction, 3);
       const operation = trade.direction === 'sell' ? 'Sell' : 'Buy';
       const comment = tradeComment(eaName);
@@ -121,7 +136,11 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
             ok = true;
           } catch (err) {
             const message = err instanceof Error ? err.message : 'OrderSend failed';
-            error = /trading is disabled/i.test(message) ? 'trading is disabled on this broker' : message;
+            error = /invalid volume/i.test(message)
+              ? `invalid volume at lot ${lot}`
+              : /trading is disabled/i.test(message)
+                ? 'trading is disabled on this broker'
+                : message;
           }
         }
         if (n < trade.trades - 1) await sleep(250);
