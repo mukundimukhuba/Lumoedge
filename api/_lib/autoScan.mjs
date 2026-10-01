@@ -222,7 +222,17 @@ export function liveMarketPlan(bars) {
 }
 
 export function normalizeBars(raw) {
-  const list = Array.isArray(raw) ? raw : [];
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.bars)
+      ? raw.bars
+      : Array.isArray(raw?.data)
+        ? raw.data
+        : Array.isArray(raw?.history)
+          ? raw.history
+          : Array.isArray(raw?.rates)
+            ? raw.rates
+            : [];
   return list
     .map((bar) => ({
       time: String(bar?.time || bar?.Time || ''),
@@ -409,6 +419,25 @@ export async function writeSymbolAnalysis(payload, source) {
   }
 }
 
+/** A chart photo still returns a scan when live history is short. */
+export function applyChartLiveCheck(result, plan, barCount) {
+  if (!result?.ok || !result.payload) return result;
+  if (!barCount || barCount < 12 || !plan || result.payload.held) return result;
+  if (plan.ok && plan.direction && plan.direction !== result.payload.direction) {
+    return {
+      ...result,
+      ok: true,
+      payload: {
+        ...result.payload,
+        ok: true,
+        tradeable: false,
+        error: `Live market is ${plan.direction.toUpperCase()}. This chart was not sent.`,
+      },
+    };
+  }
+  return result;
+}
+
 export async function reconcileManualScan(result, mt5Id, fetchFn = fetch) {
   if (!result?.ok || !result.payload?.symbol) return result;
   const active = await readSymbolAnalysis(result.payload.symbol);
@@ -417,22 +446,13 @@ export async function reconcileManualScan(result, mt5Id, fetchFn = fetch) {
   if (status.valid) {
     result.payload = lockPayloadToAnalysis(result.payload, active);
   }
-  if (mt5Id && result.payload?.direction) {
-    const history = await fetchRecentBars(mt5Id, result.payload.symbol, fetchFn);
+  if (mt5Id && result.payload?.direction && !result.payload.held) {
+    const brokerSymbol = await resolveMarketSymbol(mt5Id, result.payload.symbol, fetchFn).catch(() => '');
+    const history = await fetchRecentBars(mt5Id, brokerSymbol || result.payload.symbol, fetchFn);
     const plan = liveMarketPlan(history.bars);
-    if (!plan.ok || plan.direction !== result.payload.direction) {
-      result.ok = false;
-      result.payload = {
-        ...result.payload,
-        ok: false,
-        tradeable: false,
-        demo: false,
-        error: plan.ok
-          ? `Live market is ${plan.direction.toUpperCase()}. No trade opened.`
-          : plan.error || 'Live market is not aligned. No trade opened.',
-      };
-      return result;
-    }
+    const checked = applyChartLiveCheck(result, plan, history.bars.length);
+    if (checked.payload?.tradeable && !checked.payload.held) await writeSymbolAnalysis(checked.payload, 'manual');
+    return checked;
   }
   if (result.payload.tradeable && !result.payload.held) await writeSymbolAnalysis(result.payload, 'manual');
   return result;

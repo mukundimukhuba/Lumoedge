@@ -13,6 +13,7 @@ import {
   formatBarsForModel,
   isSymbolQuery,
   liveMarketPlan,
+  applyChartLiveCheck,
   lockPayloadToAnalysis,
   normalizeBars,
   runAutoScan,
@@ -165,6 +166,20 @@ test('a live selloff is a sell and a bounce is not a buy', () => {
   assert.equal(bounce.ok, false);
   const rally = liveMarketPlan(walk(4100, Array(20).fill(2)));
   assert.equal(rally.direction, 'buy');
+});
+
+test('a chart scan still returns when live history is short', () => {
+  const scan = {
+    ok: true,
+    payload: { ok: true, symbol: 'XAUUSD', direction: 'sell', tradeable: true, accuracy: 78 },
+  };
+  const kept = applyChartLiveCheck(scan, { ok: false, error: 'Not enough live candles. No trade opened.' }, 0);
+  assert.equal(kept.ok, true);
+  assert.equal(kept.payload.tradeable, true);
+  assert.equal(kept.payload.error, undefined);
+  const wrapped = normalizeBars({ data: [{ open: 1, high: 2, low: 0.5, close: 1.4 }] });
+  assert.equal(wrapped.length, 1);
+  assert.equal(wrapped[0].close, 1.4);
 });
 
 test('auto scan uses the live candles and does not call a model', async () => {
