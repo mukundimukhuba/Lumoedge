@@ -177,6 +177,69 @@ export function mirrorClientToSuperWorkspace(workspaces, entry) {
 }
 
 /** Create or return existing client in Firebase — source of truth for live registrations. */
+/** Firebase session keys cannot contain . # $ [ ] / */
+export function sessionEmailKey(email) {
+  return String(email || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.#$[\]/]/g, '_');
+}
+
+export function sessionDeviceKeys(email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  const keys = [];
+  const push = (key) => {
+    if (key && !keys.includes(key)) keys.push(key);
+  };
+  push(sessionEmailKey(normalized));
+  if (normalized.endsWith('.com')) push(normalized.slice(0, -4));
+  return keys;
+}
+
+/** Payment or an explicit approval upgrades a client who is already on file. */
+export function clientEntryPatch(existing, input) {
+  const wantApproved = normalizeClientStatus(input?.status || '') === 'approved';
+  const wantPaid = Boolean(input?.paymentClaimed);
+  if (!wantApproved && !wantPaid) return null;
+  const firstName = String(input?.firstName || '').trim() || existing?.firstName;
+  const lastName = String(input?.lastName || '').trim() || existing?.lastName;
+  return {
+    firstName,
+    lastName,
+    status: wantApproved ? 'approved' : existing?.status || 'pending',
+    paymentClaimed: wantPaid ? true : Boolean(existing?.paymentClaimed),
+    paymentClaimedAt: wantPaid
+      ? input?.paymentClaimedAt || existing?.paymentClaimedAt || new Date().toISOString()
+      : existing?.paymentClaimedAt,
+  };
+}
+
+export function sessionWithoutDevice(session) {
+  if (!session || typeof session !== 'object') return { session, previousLabel: '' };
+  const previousLabel = String(session.device?.label || '');
+  const next = { ...session, deviceReleasedAt: new Date().toISOString() };
+  delete next.device;
+  return { session: next, previousLabel };
+}
+
+/** Drop the phone lock so the same email can sign in on a new device. */
+export async function firebaseClearSessionDevice(email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  let previousLabel = '';
+  for (const key of sessionDeviceKeys(normalized)) {
+    const session = await firebaseRead(`lumo/sessions/${key}`);
+    if (session && typeof session === 'object' && session.device?.label) {
+      previousLabel = previousLabel || String(session.device.label);
+    }
+    await firebaseWrite(`lumo/sessions/${key}/device`, null);
+  }
+  return { ok: true, email: normalized, previousLabel };
+}
+
 export async function firebasePostClientEntry(input) {
   const email = normalizeRegistrationEmail(input.email);
   if (!isRegistrationEmail(email)) return null;
@@ -187,6 +250,10 @@ export async function firebasePostClientEntry(input) {
   const freshClients = toArray(await firebaseRead('lumo/clients'));
   const existing = freshClients.find((c) => String(c.email || '').toLowerCase() === email);
   if (existing) {
+    const upgrade = clientEntryPatch(existing, { ...input, firstName, lastName });
+    if (upgrade) {
+      return firebasePatchClientById(email, upgrade);
+    }
     const remoteWs = (await firebaseRead('lumo/store/workspaces')) || {};
     const nextWs = mirrorClientToSuperWorkspace(remoteWs, existing);
     const sid = 'LM-004821';

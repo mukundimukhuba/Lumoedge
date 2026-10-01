@@ -2,8 +2,10 @@ import { emptyDb, hasDurableBackend, loadDb, saveDb } from './store.mjs';
 import {
   adminRoleRank,
   firebasePatchAdminRole,
+  firebaseClearSessionDevice,
   firebasePatchClientById,
   firebasePostClientEntry,
+  sessionWithoutDevice,
   firebaseRegisterMentor,
   firebaseRead,
   firebaseWrite,
@@ -330,11 +332,19 @@ export async function handleApi(req, res, pathname) {
         paymentClaimedAt: body.paymentClaimedAt,
         paymentVerified: false,
       });
-      if (String(body.status || '').toLowerCase() === 'approved') {
+      if (String(body.status || '').toLowerCase() === 'approved' || body.paymentClaimed === true) {
         created =
           (await firebasePatchClientById(email, {
-            status: 'approved',
+            status: String(body.status || '').toLowerCase() === 'approved' ? 'approved' : created?.status,
+            paymentClaimed: body.paymentClaimed === true ? true : Boolean(created?.paymentClaimed),
+            paymentClaimedAt:
+              body.paymentClaimed === true
+                ? body.paymentClaimedAt || new Date().toISOString()
+                : created?.paymentClaimedAt,
           })) || created;
+      }
+      if (String(created?.status || '').toLowerCase() === 'approved') {
+        await firebaseClearSessionDevice(email).catch(() => undefined);
       }
       if (!created) {
         json(res, 503, { error: 'Could not save client to Firebase' });
@@ -359,7 +369,16 @@ export async function handleApi(req, res, pathname) {
     if (pathname.startsWith('/api/clients/') && req.method === 'PATCH') {
       const id = decodeURIComponent(pathname.replace('/api/clients/', ''));
       const body = await readBody(req);
-      const fbUpdated = await firebasePatchClientById(id, body);
+      const approving = String(body.status || '').toLowerCase() === 'approved';
+      const patch = approving
+        ? {
+            ...body,
+            status: 'approved',
+            paymentClaimed: true,
+            paymentClaimedAt: body.paymentClaimedAt || new Date().toISOString(),
+          }
+        : body;
+      const fbUpdated = await firebasePatchClientById(id, patch);
       if (!fbUpdated) {
         json(res, 404, { error: 'Client not found in Firebase', id, table: 'lumo/clients' });
         return true;
@@ -368,6 +387,9 @@ export async function handleApi(req, res, pathname) {
       db.clients = mergeClients(db.clients || [], [fbUpdated]);
       mirrorClientToSuper(db, fbUpdated);
       await saveDb(db, sha);
+      if (String(fbUpdated.status || '').toLowerCase() === 'approved') {
+        await firebaseClearSessionDevice(fbUpdated.email).catch(() => undefined);
+      }
       if (String(fbUpdated.status || '').toLowerCase() === 'rejected') {
         await tryReverseCommission({
           email: fbUpdated.email,
@@ -646,6 +668,37 @@ export async function handleApi(req, res, pathname) {
       }
       await saveDb(db, sha);
       json(res, 200, { ok: true, removed: before - (db.clients || []).length });
+      return true;
+    }
+
+    if (pathname === '/api/sessions/reset-device' && req.method === 'POST') {
+      const body = await readBody(req);
+      const email = String(body.email || '')
+        .trim()
+        .toLowerCase();
+      if (!email.includes('@')) {
+        json(res, 400, { ok: false, error: 'Enter the client email.' });
+        return true;
+      }
+      const cleared = await firebaseClearSessionDevice(email);
+      let previousLabel = cleared.previousLabel || '';
+      try {
+        const { db, sha } = await loadDb();
+        const prev = db.sessions?.[email];
+        if (prev && typeof prev === 'object') {
+          const released = sessionWithoutDevice(prev);
+          previousLabel = previousLabel || released.previousLabel;
+          db.sessions = { ...(db.sessions || {}), [email]: released.session };
+          await saveDb(db, sha);
+        }
+      } catch {
+        /* Firebase is the lock the phone reads. The backup copy can fail. */
+      }
+      json(res, 200, {
+        ok: true,
+        email,
+        previousLabel,
+      });
       return true;
     }
 
