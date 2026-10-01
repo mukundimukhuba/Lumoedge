@@ -4,8 +4,23 @@ import { a as checkConnect, c as brokerSymbols, f as orderSend, i as tradeCommen
 import { readSymbolTrades, snapLot, tradeCountFor } from './symbolTrades.js?v=symedit1';
 import { loadScannerTelegramPref, notifyMentorTelegramTrade } from './telegramNotify-Dhw55VDM.js';
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, signal) {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    const stop = () => {
+      clearTimeout(timer);
+      reject(abortError());
+    };
+    signal.addEventListener('abort', stop, { once: true });
+  });
+}
+
+function abortError() {
+  const error = new Error('Engine stopped.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function clampLot(value) {
@@ -94,7 +109,25 @@ async function symbolLot(token, symbol, requested) {
   return snapLot(requested, group);
 }
 
-export async function openSelectedTrades({ rows, scan, send, onNote }) {
+function emitStatus(onStatus, event) {
+  try {
+    onStatus?.(event);
+  } catch {
+    /* status display must not block the order path */
+  }
+}
+
+function tradeRejected(data, direction, brokerSymbol) {
+  const accuracy = Math.max(1, Math.min(99, Math.round(Number(data?.accuracy) || 0)));
+  const stopLoss = Number(data?.stopLoss) || 0;
+  if (!data?.ok) return data?.error || 'scan failed';
+  if (data.demo || data.tradeable === false || data.pricesValid === false || !stopLoss || accuracy < 74) {
+    return `${direction.toUpperCase()} ${brokerSymbol} is not strong enough to open trades.`;
+  }
+  return '';
+}
+
+export async function openSelectedTrades({ rows, scan, send, onNote, onStatus, signal }) {
   const list = (rows || [])
     .map((row) => ({
       symbol: String(row?.symbol || '').trim(),
@@ -103,93 +136,167 @@ export async function openSelectedTrades({ rows, scan, send, onNote }) {
     .filter((row) => row.symbol);
   if (!list.length) return 'Select symbols first. No trades were opened.';
   const notes = [];
-  for (let i = 0; i < list.length; i += 1) {
-    const { symbol, trades } = list[i];
-    onNote?.('Analyzing the market');
-    let data;
-    try {
-      data = await scan(symbol);
-    } catch {
-      notes.push(`${symbol}: scan failed`);
-      continue;
-    }
-    if (!data?.ok) {
-      notes.push(`${symbol}: ${data?.error || 'scan failed'}`);
-      continue;
-    }
-    const direction = data.direction === 'sell' ? 'sell' : 'buy';
-    const brokerSymbol = data.symbol || symbol;
-    const accuracy = Math.max(1, Math.min(99, Math.round(Number(data.accuracy) || 0)));
-    const stopLoss = Number(data.stopLoss) || 0;
-    if (data.demo || data.tradeable === false || data.pricesValid === false || !stopLoss || accuracy < 74) {
-      notes.push(`${direction.toUpperCase()} ${brokerSymbol} is not strong enough to open trades.`);
-      continue;
-    }
-    const label = `${direction.toUpperCase()} ${brokerSymbol}`;
-    onNote?.(label);
-    for (let left = 15; left >= 1; left -= 1) {
-      onNote?.(`${label} · ${left}`);
-      await sleep(1000);
-    }
-    let confirm = null;
-    try {
-      confirm = await scan(symbol);
-    } catch {
-      confirm = null;
-    }
-    const confirmDirection = confirm?.direction === 'sell' ? 'sell' : confirm?.direction === 'buy' ? 'buy' : '';
-    const confirmAccuracy = Math.round(Number(confirm?.accuracy) || 0);
-    if (
-      !confirm?.ok ||
-      confirm.demo ||
-      confirm.tradeable === false ||
-      confirm.pricesValid === false ||
-      confirmDirection !== direction ||
-      confirmAccuracy < 74 ||
-      !Number(confirm.stopLoss)
-    ) {
-      notes.push(`${label} changed on the live market. No trades opened.`);
-      continue;
-    }
-    onNote?.('Starting opening trades');
-    const entry = Number(confirm.entryPrice) || Number(data.entryPrice) || 0;
-    const liveStop = Number(confirm.stopLoss) || stopLoss;
-    try {
-      const status = await send({
+  try {
+    for (let i = 0; i < list.length; i += 1) {
+      if (signal?.aborted) throw abortError();
+      const { symbol, trades } = list[i];
+      onNote?.('Analyzing the market');
+      emitStatus(onStatus, { phase: 'scanning', symbol, index: i + 1, total: list.length, trades });
+      let data;
+      try {
+        data = await scan(symbol);
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        const message = `${symbol}: scan failed`;
+        notes.push(message);
+        emitStatus(onStatus, { phase: 'error', symbol, message });
+        continue;
+      }
+      if (signal?.aborted) throw abortError();
+      const direction = data?.direction === 'sell' ? 'sell' : 'buy';
+      const brokerSymbol = data?.symbol || symbol;
+      const rejected = tradeRejected(data, direction, brokerSymbol);
+      if (rejected) {
+        notes.push(`${symbol}: ${rejected}`);
+        emitStatus(onStatus, { phase: 'nosignal', symbol: brokerSymbol, message: rejected });
+        continue;
+      }
+      const accuracy = Math.max(1, Math.min(99, Math.round(Number(data.accuracy) || 0)));
+      const stopLoss = Number(data.stopLoss) || 0;
+      const label = `${direction.toUpperCase()} ${brokerSymbol}`;
+      onNote?.(label);
+      emitStatus(onStatus, {
+        phase: 'signal',
+        symbol: brokerSymbol,
+        direction,
+        accuracy,
+        entry: Number(data.entryPrice) || 0,
+        stopLoss,
+        takeProfit1: data.takeProfit1 || data.takeProfit || 0,
+        trades,
+        summary: data.summary || '',
+      });
+      for (let left = 15; left >= 1; left -= 1) {
+        if (signal?.aborted) throw abortError();
+        onNote?.(`${label} · ${left}`);
+        emitStatus(onStatus, { phase: 'countdown', symbol: brokerSymbol, direction, left, total: 15, accuracy, trades });
+        await sleep(1000, signal);
+      }
+      if (signal?.aborted) throw abortError();
+      onNote?.('Analyzing the market');
+      emitStatus(onStatus, { phase: 'confirming', symbol: brokerSymbol, direction });
+      let confirm = null;
+      try {
+        confirm = await scan(symbol);
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        confirm = null;
+      }
+      if (signal?.aborted) throw abortError();
+      const confirmDirection = confirm?.direction === 'sell' ? 'sell' : confirm?.direction === 'buy' ? 'buy' : '';
+      const confirmAccuracy = Math.round(Number(confirm?.accuracy) || 0);
+      const confirmRejected =
+        !confirm?.ok ||
+        confirm.demo ||
+        confirm.tradeable === false ||
+        confirm.pricesValid === false ||
+        confirmDirection !== direction ||
+        confirmAccuracy < 74 ||
+        !Number(confirm.stopLoss);
+      if (confirmRejected) {
+        const message = `${label} changed on the live market. No trades opened.`;
+        notes.push(message);
+        emitStatus(onStatus, { phase: 'nosignal', symbol: brokerSymbol, direction, message });
+        continue;
+      }
+      onNote?.('Starting opening trades');
+      const entry = Number(confirm.entryPrice) || Number(data.entryPrice) || 0;
+      const liveStop = Number(confirm.stopLoss) || stopLoss;
+      emitStatus(onStatus, {
+        phase: 'executing',
         symbol: brokerSymbol,
         direction,
         trades,
         entry,
-        stopLoss: liveStop,
         accuracy: confirmAccuracy,
-        summary: confirm.summary || data.summary,
-        takeProfit1: confirm.takeProfit1 || confirm.takeProfit || data.takeProfit1 || data.takeProfit,
-        takeProfit2: confirm.takeProfit2 || data.takeProfit2,
-        takeProfit3: confirm.takeProfit3 || data.takeProfit3,
       });
-      notes.push(status);
-    } catch (error) {
-      notes.push(`${brokerSymbol}: ${error instanceof Error ? error.message : 'Order failed'}`);
+      try {
+        const status = await send({
+          symbol: brokerSymbol,
+          direction,
+          trades,
+          entry,
+          stopLoss: liveStop,
+          accuracy: confirmAccuracy,
+          summary: confirm.summary || data.summary,
+          takeProfit1: confirm.takeProfit1 || confirm.takeProfit || data.takeProfit1 || data.takeProfit,
+          takeProfit2: confirm.takeProfit2 || data.takeProfit2,
+          takeProfit3: confirm.takeProfit3 || data.takeProfit3,
+        });
+        notes.push(status);
+        const openedMatch = String(status || '').match(/Opened\s+(\d+)/i);
+        const opened = openedMatch ? Number(openedMatch[1]) : 0;
+        if (opened > 0) {
+          emitStatus(onStatus, {
+            phase: 'open',
+            symbol: brokerSymbol,
+            direction,
+            entry,
+            opened,
+            requested: trades,
+            accuracy: confirmAccuracy,
+            message: status,
+          });
+        } else {
+          emitStatus(onStatus, { phase: 'error', symbol: brokerSymbol, message: status || 'Broker rejected the order.' });
+        }
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        const message = `${brokerSymbol}: ${error instanceof Error ? error.message : 'Order failed'}`;
+        notes.push(message);
+        emitStatus(onStatus, { phase: 'error', symbol: brokerSymbol, message });
+      }
     }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      notes.push('Engine stopped. No further trades were opened.');
+      emitStatus(onStatus, { phase: 'stopped', message: 'Engine stopped. No further trades were opened.' });
+      return notes.join(' · ');
+    }
+    throw error;
   }
+  emitStatus(onStatus, { phase: 'stopped', message: notes.join(' · ') });
   return notes.join(' · ');
 }
 
-export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId, licenseKey, onNote }) {
+export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId, licenseKey, onNote, onStatus, signal, counts, lot }) {
   const names = (Array.isArray(symbols) ? symbols : []).map((item) => String(item || '').trim()).filter(Boolean);
-  if (!names.length) return 'Select symbols first. START is on, and no trades were opened.';
+  if (!names.length) {
+    const message = 'Select symbols first. START is on, and no trades were opened.';
+    emitStatus(onStatus, { phase: 'error', message });
+    return message;
+  }
   const saved = readSymbolTrades(email);
+  const savedCounts = counts && typeof counts === 'object' ? counts : saved.counts;
   const token = await mt5Token(email).catch(() => '');
-  if (!token) return 'Connect MetaTrader first. START is on, and no trades were opened.';
+  if (!token) {
+    const message = 'Connect MetaTrader first. START is on, and no trades were opened.';
+    emitStatus(onStatus, { phase: 'error', message });
+    return message;
+  }
   if (!(await checkConnect(token).catch(() => false))) {
-    return 'MetaTrader session expired. Reconnect, then press START again.';
+    const message = 'MetaTrader session expired. Reconnect, then press START again.';
+    emitStatus(onStatus, { phase: 'error', message });
+    return message;
   }
   const brokerList = await brokerSymbols(token).catch(() => []);
-  const requestedLot = clampLot(saved.lot);
+  const requestedLot = clampLot(lot ?? saved.lot);
   const notify = String(email || '').toLowerCase() === 'mukundimukhuba8@gmail.com' && loadScannerTelegramPref(email) !== false;
   return openSelectedTrades({
-    rows: names.map((symbol) => ({ symbol, trades: tradeCountFor(saved.counts, symbol) })),
+    rows: names.map((symbol) => ({ symbol, trades: tradeCountFor(savedCounts, symbol) })),
     onNote,
+    onStatus,
+    signal,
     scan: async (symbol) => {
       const response = await fetch(apiUrl('/api/scan/auto'), {
         method: 'POST',
@@ -217,7 +324,7 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
           const current = choices[Math.min(choiceIndex, choices.length - 1)] || symbol;
           const currentLot = current === symbol ? lot : await symbolLot(token, current, requestedLot);
           try {
-            if (attempt) await sleep(400);
+            if (attempt) await sleep(400, signal);
             await orderSend({
               id: token,
               symbol: current,
@@ -249,7 +356,7 @@ export async function runSelectedSymbolTrades({ email, symbols, eaName, mentorId
             break;
           }
         }
-        if (n < trade.trades - 1) await sleep(250);
+        if (n < trade.trades - 1) await sleep(250, signal);
       }
       if (!opened) return `${symbol}: ${error || 'Broker rejected the order.'}`;
       if (notify) {
