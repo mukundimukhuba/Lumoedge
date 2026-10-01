@@ -1,4 +1,3 @@
-const CORE_SYMBOLS = ['XAUUSD', 'US30', 'USTECH', 'GBPUSD', 'EURUSD', 'USDJPY', 'GBPJPY', 'XAGUSD'];
 const RING_RADIUS = 52;
 
 export function headerStatus(phase) {
@@ -34,17 +33,15 @@ function cleanSymbol(value) {
     .slice(0, 32);
 }
 
-function symbolList(seed) {
+function chosenSymbols(seed) {
   const out = [];
   const seen = new Set();
-  const add = (value) => {
-    const name = cleanSymbol(value);
-    if (!name || seen.has(name)) return;
+  for (const value of Array.isArray(seed) ? seed : []) {
+    const name = cleanSymbol(value?.symbol || value);
+    if (!name || seen.has(name)) continue;
     seen.add(name);
     out.push(name);
-  };
-  (Array.isArray(seed) ? seed : []).forEach(add);
-  CORE_SYMBOLS.forEach(add);
+  }
   return out;
 }
 
@@ -161,24 +158,21 @@ export async function openAutoEngine(opts = {}) {
   const existing = document.getElementById('lte-shell');
   if (existing) {
     existing.scrollTop = 0;
+    if (opts.autostart !== false && !existing.__lteRunning?.()) existing.__lteStart?.();
     return existing;
   }
-  const { readSymbolTrades, writeSymbolTrades } = await import('./symbolTrades.js?v=symedit1');
+  const { readSymbolTrades, tradeCountFor } = await import('./symbolTrades.js?v=symedit1');
   const saved = readSymbolTrades(opts.email);
-  const symbols = symbolList(opts.symbols);
-  const preferred = (Array.isArray(opts.symbols) ? opts.symbols : []).map(cleanSymbol).filter(Boolean);
-  const selected = new Set(preferred.length ? preferred : ['XAUUSD']);
-  const firstCount = Number(saved.counts?.[preferred[0] || 'XAUUSD']);
-  const initialCount = Number.isFinite(firstCount) && firstCount > 0 ? Math.max(1, Math.min(10, Math.round(firstCount))) : 3;
+  const symbols = chosenSymbols(opts.symbols);
+  const counts = Object.fromEntries(symbols.map((name) => [name, tradeCountFor(saved.counts, name)]));
 
   const state = {
     phase: 'ready',
     running: false,
     finished: false,
     symbols,
-    selected,
-    count: initialCount,
-    custom: ![1, 2, 3].includes(initialCount),
+    selected: new Set(symbols),
+    counts,
     lot: String(saved.lot || '0.01'),
     symbol: '',
     direction: '',
@@ -217,7 +211,7 @@ export async function openAutoEngine(opts = {}) {
       <section class="lte-card" id="lte-open" hidden></section>
       <section class="lte-card" id="lte-setup"></section>
       <p class="lte-run" id="lte-run" hidden>ENGINE RUNNING</p>
-      <button type="button" class="lte-go" id="lte-go">START AUTO TRADE</button>
+      <button type="button" class="lte-go is-stop" id="lte-go" hidden>STOP ENGINE</button>
       <details class="lte-card lte-log" id="lte-log">
         <summary>ENGINE ACTIVITY</summary>
         <ul id="lte-log-list"></ul>
@@ -246,38 +240,9 @@ export async function openAutoEngine(opts = {}) {
   }
 
   function paintSetup() {
-    const locked = state.running;
     const names = [...state.selected];
-    if (locked) {
-      setupEl.innerHTML = `<div class="lte-summary"><div>${field('SYMBOLS', names.join(', ') || 'None')}</div><div>${field('MAX TRADES', String(state.count))}</div><div>${field('TIMEFRAME', '15M')}</div><div>${field('ENGINE MODE', 'AUTO')}</div></div>`;
-      return;
-    }
-    const chips = state.symbols
-      .map((name) => {
-        const on = state.selected.has(name) ? ' is-on' : '';
-        return `<button type="button" class="lte-chip${on}" data-symbol="${name}" aria-pressed="${state.selected.has(name)}" ${locked ? 'disabled' : ''}>${name}</button>`;
-      })
-      .join('');
-    const counts = [1, 2, 3]
-      .map((n) => {
-        const on = !state.custom && state.count === n ? ' is-on' : '';
-        return `<button type="button" class="lte-count${on}" data-count="${n}" ${locked ? 'disabled' : ''}>${n} Trade${n > 1 ? 's' : ''}</button>`;
-      })
-      .join('');
-    const customOn = state.custom ? ' is-on' : '';
-    setupEl.innerHTML = `
-      <p class="lte-label">SYMBOLS</p>
-      <div class="lte-chips">${chips}</div>
-      <p class="lte-label" style="margin-top:16px">TRADE COUNT</p>
-      <div class="lte-counts">${counts}<button type="button" class="lte-count${customOn}" data-count="custom" ${locked ? 'disabled' : ''}>Custom</button></div>
-      ${state.custom ? `<input class="lte-custom" id="lte-custom" inputmode="numeric" aria-label="Custom trade count" value="${state.count}" />` : ''}
-      <div class="lte-summary" style="margin-top:16px">
-        <div>${field('SYMBOLS', names.length ? names.join(', ') : 'None')}</div>
-        <div>${field('MAX TRADES', String(state.count))}</div>
-        <div>${field('TIMEFRAME', '15M')}</div>
-        <div>${field('ENGINE MODE', 'AUTO')}</div>
-      </div>
-      <label class="lte-lot"><span class="lte-label" style="margin:0">LOT</span><input id="lte-lot" inputmode="decimal" aria-label="Lot size" value="${state.lot}" ${locked ? 'disabled' : ''} /></label>`;
+    const tradeLine = names.map((name) => `${state.counts[name] || 1}`).join(', ') || '—';
+    setupEl.innerHTML = `<div class="lte-summary"><div>${field('SYMBOLS', names.join(', ') || 'None selected')}</div><div>${field('TRADES', tradeLine)}</div><div>${field('TIMEFRAME', '15M')}</div><div>${field('ENGINE MODE', 'AUTO')}</div></div>`;
   }
 
   function paintStage() {
@@ -305,7 +270,7 @@ export async function openAutoEngine(opts = {}) {
         ? `<div class="lte-ring-wrap"><div class="lte-ring"><svg viewBox="0 0 120 120" aria-hidden="true"><defs><linearGradient id="lte-ring-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#67e8f9"/><stop offset=".55" stop-color="#818cf8"/><stop offset="1" stop-color="#e879f9"/></linearGradient></defs><circle class="track" cx="60" cy="60" r="${RING_RADIUS}"></circle><circle class="prog" cx="60" cy="60" r="${RING_RADIUS}" stroke="url(#lte-ring-grad)" stroke-dasharray="${ring.circ}" stroke-dashoffset="${ring.offset}"></circle></svg><div class="lte-ring-copy"><small>${copy.kicker}</small><b>${copy.time}</b>${copy.sub ? `<small>${copy.sub}</small>` : ''}</div></div></div>`
         : '';
       const signalHtml = showSignal
-        ? `<div class="lte-signal"><p class="lte-label">SIGNAL DETECTED</p><strong>${state.symbol || ''}</strong><div class="lte-side ${side === 'SELL' ? 'sell' : 'buy'}">${side}</div><div class="lte-meta"><div><span>CONFIDENCE</span><strong>${state.accuracy || '—'}%</strong></div><div><span>ENTRY</span><strong>${money(state.entry)}</strong></div><div><span>TRADES</span><strong>${state.requested || state.count}</strong></div></div>${phase === 'executing' ? '<div class="lte-exec">EXECUTE TRADE</div>' : ''}</div>`
+        ? `<div class="lte-signal"><p class="lte-label">SIGNAL DETECTED</p><strong>${state.symbol || ''}</strong><div class="lte-side ${side === 'SELL' ? 'sell' : 'buy'}">${side}</div><div class="lte-meta"><div><span>CONFIDENCE</span><strong>${state.accuracy || '—'}%</strong></div><div><span>ENTRY</span><strong>${money(state.entry)}</strong></div><div><span>TRADES</span><strong>${state.requested || state.counts[state.symbol] || 1}</strong></div></div>${phase === 'executing' ? '<div class="lte-exec">EXECUTE TRADE</div>' : ''}</div>`
         : '';
       const emptyHtml = showEmpty
         ? `<div class="lte-empty"><p class="lte-label">NO VALID SIGNAL</p><p>Market conditions do not meet the engine requirements.</p></div>`
@@ -376,9 +341,9 @@ export async function openAutoEngine(opts = {}) {
     pill.classList.toggle('is-live', state.running || status === 'LIVE ENGINE' || status === 'SCANNING');
     pill.classList.toggle('is-open', state.phase === 'open');
     pill.classList.toggle('is-error', state.phase === 'error');
-    goBtn.textContent = state.running ? 'STOP ENGINE' : 'START AUTO TRADE';
-    goBtn.classList.toggle('is-stop', state.running);
-    goBtn.disabled = !state.running && state.selected.size === 0;
+    goBtn.hidden = !state.running;
+    goBtn.textContent = 'STOP ENGINE';
+    goBtn.classList.add('is-stop');
     runEl.hidden = !state.running;
     const opened = state.trades.reduce((sum, trade) => sum + (Number(trade.opened) || 0), 0);
     noteEl.textContent = opened ? `Opened this pass: ${opened}.` : '';
@@ -471,7 +436,7 @@ export async function openAutoEngine(opts = {}) {
         direction: event.direction,
         entry: Number(event.entry) || 0,
         opened: Number(event.opened) || 0,
-        requested: Number(event.requested) || Number(event.trades) || state.count,
+        requested: Number(event.requested) || Number(event.trades) || state.counts[event.symbol] || 1,
         openedAt: Date.now(),
       });
       addLog(event.message || `Opened ${event.opened} ${event.symbol || ''}`);
@@ -498,10 +463,16 @@ export async function openAutoEngine(opts = {}) {
   }
 
   async function start() {
-    if (state.running || state.selected.size === 0) return;
+    if (state.running) return;
     const names = [...state.selected];
-    const counts = Object.fromEntries(names.map((name) => [name, state.count]));
-    writeSymbolTrades(opts.email, { counts: { ...saved.counts, ...counts }, lot: state.lot });
+    if (!names.length) {
+      state.phase = 'error';
+      state.message = 'Select symbols on the Symbols page first. No trades were opened.';
+      addLog(state.message);
+      render();
+      return;
+    }
+    const counts = Object.fromEntries(names.map((name) => [name, state.counts[name] || 1]));
     state.running = true;
     state.finished = false;
     state.phase = 'starting';
@@ -550,40 +521,8 @@ export async function openAutoEngine(opts = {}) {
     render();
   }
 
-  shell.addEventListener('click', (event) => {
-    const chip = event.target.closest?.('[data-symbol]');
-    if (chip && !state.running) {
-      const name = chip.getAttribute('data-symbol');
-      if (state.selected.has(name)) state.selected.delete(name);
-      else state.selected.add(name);
-      render();
-      return;
-    }
-    const count = event.target.closest?.('[data-count]');
-    if (count && !state.running) {
-      const value = count.getAttribute('data-count');
-      if (value === 'custom') state.custom = true;
-      else {
-        state.custom = false;
-        state.count = Number(value);
-      }
-      render();
-    }
-  });
-  shell.addEventListener('input', (event) => {
-    if (event.target.id === 'lte-custom') {
-      const n = Math.round(Number(String(event.target.value).replace(/\D/g, '')) || 1);
-      state.count = Math.max(1, Math.min(10, n));
-      paintChrome();
-      return;
-    }
-    if (event.target.id === 'lte-lot') {
-      state.lot = String(event.target.value || '').replace(/[^0-9.]/g, '').slice(0, 6) || '0.01';
-    }
-  });
   goBtn.addEventListener('click', () => {
     if (state.running) stop();
-    else start();
   });
   shell.querySelector('.lte-x').addEventListener('click', () => {
     if (state.running) stop();
@@ -598,8 +537,10 @@ export async function openAutoEngine(opts = {}) {
     if (window.__lumoAutoStop === stop) window.__lumoAutoStop = null;
   }
 
-  render();
-  if (opts.autostart) start();
+  shell.__lteStart = start;
+  shell.__lteRunning = () => state.running;
+  if (opts.autostart !== false) start();
+  else render();
   return shell;
 }
 
