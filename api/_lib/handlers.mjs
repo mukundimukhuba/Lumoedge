@@ -5,6 +5,7 @@ import {
   firebaseClearSessionDevice,
   firebasePatchClientById,
   firebasePostClientEntry,
+  preferSessionDevice,
   sessionWithoutDevice,
   firebaseRegisterMentor,
   firebaseRead,
@@ -104,7 +105,7 @@ function mergeSessionPreferLicense(prev, incoming) {
     : intentionalClear
       ? incoming.accessStatus || 'pending'
       : incoming.accessStatus || prev.accessStatus || 'pending';
-  return {
+  const merged = {
     ...prev,
     ...incoming,
     accessStatus,
@@ -114,6 +115,12 @@ function mergeSessionPreferLicense(prev, incoming) {
       licenseKey,
     },
   };
+  if (incoming.device == null) {
+    if (prev.device) merged.device = prev.device;
+  } else {
+    merged.device = preferSessionDevice(prev.device, incoming.device);
+  }
+  return merged;
 }
 
 function mirrorClientToSuper(db, entry) {

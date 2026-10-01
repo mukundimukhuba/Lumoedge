@@ -216,6 +216,24 @@ export function clientEntryPatch(existing, input) {
   };
 }
 
+/** Newer sign-in wins. A heartbeat keeps claimedAt, so it cannot take the email from another phone. */
+export function preferSessionDevice(stored, incoming) {
+  if (!incoming || typeof incoming !== 'object' || !incoming.id) return stored || incoming;
+  if (!stored || typeof stored !== 'object' || !stored.id) return incoming;
+  if (stored.id === incoming.id) {
+    return {
+      ...stored,
+      ...incoming,
+      claimedAt: incoming.claimedAt || stored.claimedAt,
+    };
+  }
+  const nextClaim = Date.parse(incoming.claimedAt || '');
+  const prevClaim = Date.parse(stored.claimedAt || '');
+  const next = Number.isFinite(nextClaim) ? nextClaim : 0;
+  const prev = Number.isFinite(prevClaim) ? prevClaim : 0;
+  return next > prev ? incoming : stored;
+}
+
 export function sessionWithoutDevice(session) {
   if (!session || typeof session !== 'object') return { session, previousLabel: '' };
   const previousLabel = String(session.device?.label || '');

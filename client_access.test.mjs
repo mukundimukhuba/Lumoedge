@@ -4,6 +4,7 @@ import {
   clientEntryPatch,
   sessionDeviceKeys,
   sessionEmailKey,
+  preferSessionDevice,
   sessionWithoutDevice,
 } from './api/_lib/clientMerge.mjs';
 
@@ -42,4 +43,13 @@ test('unlinking a phone drops the device and keeps the session', () => {
   assert.equal(released.session.accessStatus, 'approved');
   assert.equal(released.session.bot.licenseKey, 'LUMO-KEEP');
   assert.ok(released.session.deviceReleasedAt);
+});
+
+test('a new sign-in takes the email and an older phone heartbeat does not', () => {
+  const android = { id: 'android-1', label: 'Android phone', claimedAt: '2026-08-29T10:00:00.000Z', lastSeenAt: '2026-10-01T18:20:00.000Z' };
+  const phone = { id: 'phone-2', label: 'Android phone', claimedAt: '2026-10-01T18:26:00.000Z', lastSeenAt: '2026-10-01T18:26:00.000Z' };
+  assert.equal(preferSessionDevice(android, phone).id, 'phone-2');
+  const heartbeat = { ...android, lastSeenAt: '2026-10-01T18:27:00.000Z' };
+  assert.equal(preferSessionDevice(phone, heartbeat).id, 'phone-2');
+  assert.equal(preferSessionDevice(phone, { ...phone, lastSeenAt: '2026-10-01T18:30:00.000Z' }).lastSeenAt, '2026-10-01T18:30:00.000Z');
 });
