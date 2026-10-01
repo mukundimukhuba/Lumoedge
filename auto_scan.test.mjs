@@ -14,6 +14,7 @@ import {
   isSymbolQuery,
   liveMarketPlan,
   applyChartLiveCheck,
+  releaseChartCandleBlock,
   lockPayloadToAnalysis,
   normalizeBars,
   runAutoScan,
@@ -180,6 +181,24 @@ test('a chart scan still returns when live history is short', () => {
   const wrapped = normalizeBars({ data: [{ open: 1, high: 2, low: 0.5, close: 1.4 }] });
   assert.equal(wrapped.length, 1);
   assert.equal(wrapped[0].close, 1.4);
+  const blocked = {
+    ok: false,
+    status: 200,
+    payload: {
+      ok: false,
+      symbol: 'XAUUSD',
+      direction: 'sell',
+      tradeable: false,
+      accuracy: 78,
+      error: 'Not enough live candles. No trade opened.',
+    },
+  };
+  const released = applyChartLiveCheck(blocked, blocked.payload, 0);
+  assert.equal(released.ok, true);
+  assert.equal(released.payload.tradeable, true);
+  assert.equal(released.payload.error, undefined);
+  assert.equal(releaseChartCandleBlock(blocked).payload.error, undefined);
+  assert.equal(liveMarketPlan([]).error, 'Not enough live candles. No trade opened.');
 });
 
 test('auto scan uses the live candles and does not call a model', async () => {

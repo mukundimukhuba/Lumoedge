@@ -778,8 +778,8 @@ export default async function handler(req, res) {
 
       const parsed = parseChartScanModelText(raw);
       const result = buildScanResponse(parsed, image, { demo: false });
-      const { reconcileManualScan } = await import('./_lib/autoScan.mjs');
-      const reconciled = await reconcileManualScan(result, body.id);
+      const { reconcileManualScan, releaseChartCandleBlock } = await import('./_lib/autoScan.mjs');
+      const reconciled = releaseChartCandleBlock(await reconcileManualScan(result, body.id));
       send(res, reconciled.status, reconciled.payload);
       return;
     }

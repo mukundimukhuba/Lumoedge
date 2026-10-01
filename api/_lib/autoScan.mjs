@@ -419,11 +419,46 @@ export async function writeSymbolAnalysis(payload, source) {
   }
 }
 
+function isCandleBlock(text) {
+  return /not enough live candles/i.test(String(text || ''));
+}
+
+/** A chart photo is never discarded because broker history is short. */
+export function releaseChartCandleBlock(result) {
+  if (!result?.payload || !isCandleBlock(result.payload.error)) return result;
+  const payload = { ...result.payload };
+  delete payload.error;
+  if (String(payload.symbol || '').trim() && payload.direction) {
+    payload.ok = true;
+    payload.tradeable = true;
+    return { ...result, ok: true, status: 200, payload };
+  }
+  return {
+    ...result,
+    ok: false,
+    status: 200,
+    payload: {
+      ...payload,
+      ok: false,
+      tradeable: false,
+      error: 'Could not read a trade from this chart.',
+    },
+  };
+}
+
 /** A chart photo still returns a scan when live history is short. */
 export function applyChartLiveCheck(result, plan, barCount) {
-  if (!result?.ok || !result.payload) return result;
-  if (!barCount || barCount < 12 || !plan || result.payload.held) return result;
-  if (plan.ok && plan.direction && plan.direction !== result.payload.direction) {
+  if (!result?.payload) return result;
+  const thin = !barCount || barCount < 12 || isCandleBlock(plan?.error) || isCandleBlock(result.payload.error);
+  if (thin || result.payload.held) {
+    const restored =
+      result.ok || !(String(result.payload.symbol || '').trim() && result.payload.direction)
+        ? result
+        : { ...result, ok: true, payload: { ...result.payload, ok: true } };
+    return releaseChartCandleBlock(restored);
+  }
+  if (!result.ok) return releaseChartCandleBlock(result);
+  if (plan?.ok && plan.direction && plan.direction !== result.payload.direction) {
     return {
       ...result,
       ok: true,
@@ -435,7 +470,7 @@ export function applyChartLiveCheck(result, plan, barCount) {
       },
     };
   }
-  return result;
+  return releaseChartCandleBlock(result);
 }
 
 export async function reconcileManualScan(result, mt5Id, fetchFn = fetch) {
