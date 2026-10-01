@@ -12,6 +12,7 @@ import {
   positionSide,
   formatBarsForModel,
   isSymbolQuery,
+  liveMarketPlan,
   lockPayloadToAnalysis,
   normalizeBars,
   runAutoScan,
@@ -23,8 +24,8 @@ test('auto markets include the front-screen symbols', () => {
     AUTO_MARKETS.map((item) => item.id),
     ['XAUUSD', 'US30', 'USTECH', 'GBPUSD', 'EURUSD', 'USDJPY', 'GBPJPY', 'XAGUSD'],
   );
-  assert.match(AUTO_SCAN_PROMPT, /right edge/i);
-  assert.match(AUTO_SCAN_PROMPT, /direction buy/);
+  assert.match(AUTO_SCAN_PROMPT, /live candles/i);
+  assert.match(AUTO_SCAN_PROMPT, /not a buy/);
   assert.equal(ANALYSIS_TTL_MS, 20 * 60 * 1000);
 });
 
@@ -136,4 +137,50 @@ test('candle rows keep the last close as the right edge', () => {
   const text = formatBarsForModel('XAUUSD', 'M15', bars);
   assert.match(text, /last line is the right edge/);
   assert.match(text, /1\.55$/);
+});
+
+function walk(start, steps) {
+  const bars = [];
+  let price = start;
+  for (const step of steps) {
+    const open = price;
+    const close = price + step;
+    bars.push({
+      open,
+      close,
+      high: Math.max(open, close) + 0.1,
+      low: Math.min(open, close) - 0.1,
+    });
+    price = close;
+  }
+  return bars;
+}
+
+test('a live selloff is a sell and a bounce is not a buy', () => {
+  const selloff = liveMarketPlan(walk(4200, Array(20).fill(-2)));
+  assert.equal(selloff.ok, true);
+  assert.equal(selloff.direction, 'sell');
+  assert.ok(selloff.accuracy >= 74);
+  const bounce = liveMarketPlan(walk(4200, [...Array(18).fill(-2), 0.4, 0.4]));
+  assert.equal(bounce.ok, false);
+  const rally = liveMarketPlan(walk(4100, Array(20).fill(2)));
+  assert.equal(rally.direction, 'buy');
+});
+
+test('auto scan uses the live candles and does not call a model', async () => {
+  const calls = [];
+  const fetchFn = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('PriceHistoryToday')) {
+      return {
+        status: 200,
+        text: async () => JSON.stringify(walk(4200, [...Array(18).fill(-2), 0.4, 0.4])),
+      };
+    }
+    return { status: 200, text: async () => '[]' };
+  };
+  const result = await runAutoScan({ symbol: 'XAUUSD', id: 'session' }, fetchFn);
+  assert.equal(result.payload.ok, false);
+  assert.match(result.payload.error, /not aligned/i);
+  assert.equal(calls.some((url) => /openai|chat\/completions/i.test(url)), false);
 });

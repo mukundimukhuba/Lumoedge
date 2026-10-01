@@ -105,7 +105,7 @@ export async function openSelectedTrades({ rows, scan, send, onNote }) {
   const notes = [];
   for (let i = 0; i < list.length; i += 1) {
     const { symbol, trades } = list[i];
-    onNote?.(`Analyzing the market`);
+    onNote?.('Analyzing the market');
     let data;
     try {
       data = await scan(symbol);
@@ -118,27 +118,54 @@ export async function openSelectedTrades({ rows, scan, send, onNote }) {
       continue;
     }
     const direction = data.direction === 'sell' ? 'sell' : 'buy';
-    const entry = Number(data.entryPrice) || 0;
-    const stopLoss = Number(data.stopLoss) || 0;
-    const accuracy = Math.max(1, Math.min(99, Math.round(Number(data.accuracy) || 0)));
     const brokerSymbol = data.symbol || symbol;
+    const accuracy = Math.max(1, Math.min(99, Math.round(Number(data.accuracy) || 0)));
+    const stopLoss = Number(data.stopLoss) || 0;
     if (data.demo || data.tradeable === false || data.pricesValid === false || !stopLoss || accuracy < 74) {
       notes.push(`${direction.toUpperCase()} ${brokerSymbol} is not strong enough to open trades.`);
       continue;
     }
-    onNote?.(`Opening ${trades} ${direction.toUpperCase()} ${brokerSymbol} (${i + 1}/${list.length})…`);
+    const label = `${direction.toUpperCase()} ${brokerSymbol}`;
+    onNote?.(label);
+    for (let left = 15; left >= 1; left -= 1) {
+      onNote?.(`${label} · ${left}`);
+      await sleep(1000);
+    }
+    let confirm = null;
+    try {
+      confirm = await scan(symbol);
+    } catch {
+      confirm = null;
+    }
+    const confirmDirection = confirm?.direction === 'sell' ? 'sell' : confirm?.direction === 'buy' ? 'buy' : '';
+    const confirmAccuracy = Math.round(Number(confirm?.accuracy) || 0);
+    if (
+      !confirm?.ok ||
+      confirm.demo ||
+      confirm.tradeable === false ||
+      confirm.pricesValid === false ||
+      confirmDirection !== direction ||
+      confirmAccuracy < 74 ||
+      !Number(confirm.stopLoss)
+    ) {
+      notes.push(`${label} changed on the live market. No trades opened.`);
+      continue;
+    }
+    onNote?.('Starting opening trades');
+    const entry = Number(confirm.entryPrice) || Number(data.entryPrice) || 0;
+    const liveStop = Number(confirm.stopLoss) || stopLoss;
     try {
       const status = await send({
         symbol: brokerSymbol,
         direction,
         trades,
         entry,
-        stopLoss,
-        accuracy,
-        summary: data.summary,
-        takeProfit1: data.takeProfit1 || data.takeProfit,
-        takeProfit2: data.takeProfit2,
-        takeProfit3: data.takeProfit3,
+        stopLoss: liveStop,
+        accuracy: confirmAccuracy,
+        summary: confirm.summary || data.summary,
+        takeProfit1: confirm.takeProfit1 || confirm.takeProfit || data.takeProfit1 || data.takeProfit,
+        takeProfit2: confirm.takeProfit2 || data.takeProfit2,
+        takeProfit3: confirm.takeProfit3 || data.takeProfit3,
       });
       notes.push(status);
     } catch (error) {

@@ -1,7 +1,6 @@
 /**
- * Auto Scan reads live candles for one symbol, asks the same chart model for
- * buy/sell, and keeps that analysis so a later manual scan of the same market
- * cannot flip the other way while it is still valid.
+ * Auto Scan reads live candles for one symbol and trades only when the
+ * last candle, the recent candles, and the session all agree.
  */
 
 import {
@@ -16,7 +15,6 @@ import {
   deriveTakeProfitLadder,
   expandedRisk,
   isScanTradeable,
-  parseChartScanModelText,
   priceDecimals,
   roundScanPrice,
 } from './chartScanParse.mjs';
@@ -35,16 +33,10 @@ export const AUTO_MARKETS = [
 ];
 
 export const AUTO_SCAN_PROMPT =
-  'You analyze recent MT5 candles for one symbol and return one trade.\n' +
-  'The LAST 5 to 8 candles are the right edge. Direction comes only from those.\n' +
-  'Rising or closing up → right_edge "up", trend_bias bullish, direction buy.\n' +
-  'Falling or closing down → right_edge "down", trend_bias bearish, direction sell.\n' +
-  'Ignore the older move. A drop that already finished, with the latest candles lifting, is a BUY. A rally that already finished, with the latest candles falling, is a SELL.\n' +
-  'entry_price is the last close.\n' +
-  'BUY: stop_loss below entry. SELL: stop_loss above entry.\n' +
-  'accuracy_percent is an integer 55-89. Never use 80 or 85.\n' +
-  'Reply ONLY compact JSON:\n' +
-  '{"symbol":"SYMBOL","symbol_visible":true,"timeframe":"M15","trend_bias":"bullish|bearish|ranging","right_edge":"up|down","direction":"buy|sell","accuracy_percent":77,"entry_price":0,"stop_loss":0,"summary":"one sentence about the right edge only"}';
+  'Direction comes from the live candles, not a guess.\n' +
+  'Trade only when the last candle, the last 8 candles, and the last 20 candles all point the same way.\n' +
+  'A bounce against a falling market is not a buy. A dip against a rising market is not a sell.\n' +
+  'If they do not agree, return no trade.';
 
 const TIMEFRAMES = [
   { code: 15, label: 'M15' },
@@ -192,6 +184,43 @@ export function lockPayloadToAnalysis(payload, active) {
   };
 }
 
+/**
+ * Direction from live candles only.
+ * The last candle, the last 8, and the last 20 must agree.
+ * A bounce against the session is not a trade.
+ */
+export function liveMarketPlan(bars) {
+  const rows = normalizeBars(bars);
+  if (rows.length < 12) return { ok: false, error: 'Not enough live candles. No trade opened.' };
+  const recent = rows.slice(-8);
+  const swing = rows.slice(-20);
+  const last = recent[recent.length - 1];
+  const candleSide = (bar) => (bar.close > bar.open ? 'buy' : bar.close < bar.open ? 'sell' : '');
+  const direction = candleSide(last);
+  if (!direction) return { ok: false, error: 'The live candle is flat. No trade opened.' };
+  const aligned = recent.filter((bar) => candleSide(bar) === direction).length;
+  const recentMove = last.close - recent[0].open;
+  const swingMove = last.close - swing[0].open;
+  const recentAgrees = direction === 'buy' ? recentMove > 0 : recentMove < 0;
+  const swingAgrees = direction === 'buy' ? swingMove > 0 : swingMove < 0;
+  const minMove = Math.abs(last.close) * 0.0004;
+  if (aligned < 5 || !recentAgrees || !swingAgrees || Math.abs(recentMove) < minMove) {
+    return { ok: false, error: 'Live market is not aligned. No trade opened.' };
+  }
+  const accuracy = aligned >= 8 ? 89 : aligned >= 7 ? 86 : aligned >= 6 ? 81 : 76;
+  return {
+    ok: true,
+    direction,
+    entry: last.close,
+    stop: direction === 'buy' ? last.close - Math.abs(last.close) * 0.0001 : last.close + Math.abs(last.close) * 0.0001,
+    accuracy,
+    summary:
+      direction === 'buy'
+        ? 'Live candles are rising with the session.'
+        : 'Live candles are falling with the session.',
+  };
+}
+
 export function normalizeBars(raw) {
   const list = Array.isArray(raw) ? raw : [];
   return list
@@ -246,7 +275,7 @@ export async function fetchRecentBars(id, symbol, fetchFn = fetch) {
       12000,
     );
     let bars = today.status === 200 ? normalizeBars(today.data) : [];
-    if (bars.length < 8) {
+    if (bars.length < 12) {
       const to = new Date();
       const from = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
       const range = await readJson(
@@ -257,7 +286,7 @@ export async function fetchRecentBars(id, symbol, fetchFn = fetch) {
       if (range.status === 200) bars = normalizeBars(range.data);
       else if (today.status !== 200) lastError = String(range.text || today.text || lastError).slice(0, 180);
     }
-    if (bars.length >= 8) return { bars: bars.slice(-48), timeframe: frame.label, symbol };
+    if (bars.length >= 12) return { bars: bars.slice(-48), timeframe: frame.label, symbol };
   }
   return { bars: [], timeframe: '', symbol, error: lastError };
 }
@@ -387,9 +416,25 @@ export async function reconcileManualScan(result, mt5Id, fetchFn = fetch) {
   const status = analysisStatus(active, Date.now(), price);
   if (status.valid) {
     result.payload = lockPayloadToAnalysis(result.payload, active);
-    return result;
   }
-  if (result.payload.tradeable) await writeSymbolAnalysis(result.payload, 'manual');
+  if (mt5Id && result.payload?.direction) {
+    const history = await fetchRecentBars(mt5Id, result.payload.symbol, fetchFn);
+    const plan = liveMarketPlan(history.bars);
+    if (!plan.ok || plan.direction !== result.payload.direction) {
+      result.ok = false;
+      result.payload = {
+        ...result.payload,
+        ok: false,
+        tradeable: false,
+        demo: false,
+        error: plan.ok
+          ? `Live market is ${plan.direction.toUpperCase()}. No trade opened.`
+          : plan.error || 'Live market is not aligned. No trade opened.',
+      };
+      return result;
+    }
+  }
+  if (result.payload.tradeable && !result.payload.held) await writeSymbolAnalysis(result.payload, 'manual');
   return result;
 }
 
@@ -420,38 +465,12 @@ export async function runAutoScan(body, fetchFn = fetch) {
     };
   }
   const market = canonicalSymbol(requested) || requested.toUpperCase();
-  const config = await loadChartScanConfig();
-  if (!config.apiKey) {
-    return {
-      status: 503,
-      payload: {
-        ok: false,
-        demo: true,
-        tradeable: false,
-        accuracy: 0,
-        error: 'Chart Scanner is not configured. Fake demo signals are disabled so they cannot be sent to MT5.',
-      },
-    };
-  }
   let brokerSymbol = await resolveMarketSymbol(id, requested, fetchFn);
   if (!brokerSymbol) {
     return { status: 422, payload: { ok: false, error: `${market} is not on this broker account.` } };
   }
   const opened = await fetchOpenedOrders(id, fetchFn);
   const openSide = opened ? openBookSide(opened, market) : '';
-  const active = await readSymbolAnalysis(market);
-  const livePrice = await quotePrice(id, active?.brokerSymbol || brokerSymbol, fetchFn);
-  const activeState = analysisStatus(active, Date.now(), livePrice);
-  if (activeState.valid) {
-    const blocked = directionBlockedByOpenBook(active.direction, openSide);
-    if (blocked) {
-      return { status: 200, payload: { ok: false, error: blocked, symbol: brokerSymbol, direction: active.direction } };
-    }
-    const held = payloadFromAnalysis(active, brokerSymbol);
-    if (held.accuracy >= 74 && held.stopLoss > 0 && held.entryPrice > 0) {
-      return { status: 200, payload: held };
-    }
-  }
   let history = await fetchRecentBars(id, brokerSymbol, fetchFn);
   if (!history.bars.length) {
     const names = await loadBrokerSymbolNames(id, fetchFn).catch(() => []);
@@ -471,47 +490,27 @@ export async function runAutoScan(body, fetchFn = fetch) {
       payload: { ok: false, error: history.error || `No candles for ${brokerSymbol}.` },
     };
   }
-  let upstream;
-  try {
-    upstream = await fetchFn(config.apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0,
-        messages: [
-          {
-            role: 'user',
-            content: `${AUTO_SCAN_PROMPT}\n\n${formatBarsForModel(market, history.timeframe, history.bars)}`,
-          },
-        ],
-      }),
-    });
-  } catch (err) {
-    return {
-      status: 502,
-      payload: { ok: false, error: err instanceof Error ? err.message : 'Scan failed.' },
-    };
+  const plan = liveMarketPlan(history.bars);
+  if (!plan.ok) {
+    return { status: 200, payload: { ok: false, tradeable: false, demo: false, symbol: brokerSymbol, error: plan.error } };
   }
-  const raw = await upstream.text();
-  if (!upstream.ok) {
-    return {
-      status: 502,
-      payload: { ok: false, accuracy: 0, error: `Scan API ${upstream.status}: ${raw.slice(0, 180)}` },
-    };
+  const blocked = directionBlockedByOpenBook(plan.direction, openSide);
+  if (blocked) {
+    return { status: 200, payload: { ok: false, error: blocked, symbol: brokerSymbol, direction: plan.direction } };
   }
-  const parsed = parseChartScanModelText(raw);
-  parsed.symbol = market;
-  parsed.symbol_visible = true;
-  parsed.timeframe = parsed.timeframe || history.timeframe;
-  const seed = history.bars
-    .slice(-8)
-    .map((bar) => bar.close)
-    .join(',');
-  const result = buildScanResponse(parsed, seed, { demo: false });
+  const parsed = {
+    symbol: market,
+    symbol_visible: true,
+    timeframe: history.timeframe,
+    trend_bias: plan.direction === 'buy' ? 'bullish' : 'bearish',
+    right_edge: plan.direction === 'buy' ? 'up' : 'down',
+    direction: plan.direction,
+    accuracy_percent: plan.accuracy,
+    entry_price: plan.entry,
+    stop_loss: plan.stop,
+    summary: plan.summary,
+  };
+  const result = buildScanResponse(parsed, `${plan.entry},${plan.direction}`, { demo: false });
   if (result.payload) {
     result.payload.symbol = brokerSymbol;
     result.payload.timeframe = history.timeframe;
