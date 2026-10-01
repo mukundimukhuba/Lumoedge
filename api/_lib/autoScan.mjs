@@ -1,6 +1,6 @@
 /**
- * Auto Scan reads live candles for one symbol and trades only when the
- * last candle, the recent candles, and the session all agree.
+ * Auto Scan reads live candles for one symbol and keeps the session
+ * direction. A small bounce does not flip the signal or erase it.
  */
 
 import {
@@ -34,9 +34,9 @@ export const AUTO_MARKETS = [
 
 export const AUTO_SCAN_PROMPT =
   'Direction comes from the live candles, not a guess.\n' +
-  'Trade only when the last candle, the last 8 candles, and the last 20 candles all point the same way.\n' +
+  'The signal is the session direction when the last 20 candles have a real move and the last 8 candles have not reversed it.\n' +
   'A bounce against a falling market is not a buy. A dip against a rising market is not a sell.\n' +
-  'If they do not agree, return no trade.';
+  'If the session is flat or the last 8 candles reverse it, return no trade.';
 
 const TIMEFRAMES = [
   { code: 15, label: 'M15' },
@@ -186,33 +186,42 @@ export function lockPayloadToAnalysis(payload, active) {
 
 /**
  * Direction from live candles only.
- * The last candle, the last 8, and the last 20 must agree.
- * A bounce against the session is not a trade.
+ * The session (last 20) is the signal. A small bounce does not flip it.
+ * No trade when the session is flat or the last 8 candles reverse it.
  */
 export function liveMarketPlan(bars) {
   const rows = normalizeBars(bars);
   if (rows.length < 12) return { ok: false, error: 'Not enough live candles. No trade opened.' };
   const recent = rows.slice(-8);
   const swing = rows.slice(-20);
-  const last = recent[recent.length - 1];
+  const last = rows[rows.length - 1];
   const candleSide = (bar) => (bar.close > bar.open ? 'buy' : bar.close < bar.open ? 'sell' : '');
-  const direction = candleSide(last);
-  if (!direction) return { ok: false, error: 'The live candle is flat. No trade opened.' };
-  const aligned = recent.filter((bar) => candleSide(bar) === direction).length;
   const recentMove = last.close - recent[0].open;
   const swingMove = last.close - swing[0].open;
-  const recentAgrees = direction === 'buy' ? recentMove > 0 : recentMove < 0;
-  const swingAgrees = direction === 'buy' ? swingMove > 0 : swingMove < 0;
-  const minMove = Math.abs(last.close) * 0.0004;
-  if (aligned < 5 || !recentAgrees || !swingAgrees || Math.abs(recentMove) < minMove) {
+  const minMove = Math.abs(last.close) * 0.00012;
+  if (!(Math.abs(swingMove) >= minMove)) {
+    return { ok: false, error: 'Live market is flat. No trade opened.' };
+  }
+  const direction = swingMove > 0 ? 'buy' : 'sell';
+  const recentSide = recentMove > 0 ? 'buy' : recentMove < 0 ? 'sell' : '';
+  const reversing = recentSide && recentSide !== direction && Math.abs(recentMove) > Math.abs(swingMove) * 0.45;
+  if (reversing) {
     return { ok: false, error: 'Live market is not aligned. No trade opened.' };
   }
-  const accuracy = aligned >= 8 ? 89 : aligned >= 7 ? 86 : aligned >= 6 ? 81 : 76;
+  const aligned = recent.filter((bar) => candleSide(bar) === direction).length;
+  const lastAgrees = candleSide(last) === direction;
+  let accuracy = 78;
+  if (recentSide === direction) accuracy += 4;
+  if (aligned >= 5) accuracy += 3;
+  if (aligned >= 6) accuracy += 2;
+  if (lastAgrees) accuracy += 2;
+  accuracy = Math.min(89, accuracy);
+  const stopDist = Math.abs(last.close) * 0.0001;
   return {
     ok: true,
     direction,
     entry: last.close,
-    stop: direction === 'buy' ? last.close - Math.abs(last.close) * 0.0001 : last.close + Math.abs(last.close) * 0.0001,
+    stop: direction === 'buy' ? last.close - stopDist : last.close + stopDist,
     accuracy,
     summary:
       direction === 'buy'

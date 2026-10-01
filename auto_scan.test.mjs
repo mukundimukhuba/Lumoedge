@@ -164,9 +164,19 @@ test('a live selloff is a sell and a bounce is not a buy', () => {
   assert.equal(selloff.direction, 'sell');
   assert.ok(selloff.accuracy >= 74);
   const bounce = liveMarketPlan(walk(4200, [...Array(18).fill(-2), 0.4, 0.4]));
-  assert.equal(bounce.ok, false);
+  assert.equal(bounce.ok, true);
+  assert.equal(bounce.direction, 'sell');
+  assert.ok(bounce.accuracy >= 74);
   const rally = liveMarketPlan(walk(4100, Array(20).fill(2)));
+  assert.equal(rally.ok, true);
   assert.equal(rally.direction, 'buy');
+  assert.ok(rally.accuracy >= 74);
+  const turned = liveMarketPlan(walk(4200, [...Array(12).fill(-3), ...Array(8).fill(2.5)]));
+  assert.equal(turned.ok, false);
+  assert.match(turned.error, /not aligned/i);
+  const flat = liveMarketPlan(walk(4200, Array(20).fill(0.01).map((step, index) => (index % 2 ? -step : step))));
+  assert.equal(flat.ok, false);
+  assert.match(flat.error, /flat/i);
 });
 
 test('a chart scan still returns when live history is short', () => {
@@ -214,7 +224,9 @@ test('auto scan uses the live candles and does not call a model', async () => {
     return { status: 200, text: async () => '[]' };
   };
   const result = await runAutoScan({ symbol: 'XAUUSD', id: 'session' }, fetchFn);
-  assert.equal(result.payload.ok, false);
-  assert.match(result.payload.error, /not aligned/i);
+  assert.equal(result.payload.ok, true);
+  assert.equal(result.payload.direction, 'sell');
+  assert.ok(result.payload.accuracy >= 74);
+  assert.equal(result.payload.tradeable, true);
   assert.equal(calls.some((url) => /openai|chat\/completions/i.test(url)), false);
 });
