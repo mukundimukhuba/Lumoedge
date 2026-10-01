@@ -115,7 +115,8 @@ test('buildScanResponse returns camelCase entry, SL, and TP', () => {
   assert.equal(result.payload.symbol, 'XAUUSD');
   assert.equal(result.payload.direction, 'buy');
   assert.equal(result.payload.entryPrice, 2345.6);
-  assert.equal(result.payload.stopLoss, 2339.8);
+  assert.equal(result.payload.stopLoss, 2333.6);
+  assert.equal(result.payload.entryPrice - result.payload.stopLoss, 12);
   assert.equal(result.payload.takeProfit1 > result.payload.entryPrice, true);
   assert.equal(result.payload.takeProfits.length, 3);
 });
@@ -249,6 +250,21 @@ test('OpenAI chat wrapper JSON is parsed for nested scan fields', () => {
   );
   assert.equal(parsed.symbol, 'GBPUSD');
   assert.equal(parsed.take_profit, 1.2632);
+});
+
+test('a stop sitting on the price is pushed out before the targets are built', () => {
+  const gold = resolveScanPrices({ entry_price: 4155.73, stop_loss: 4155.05 }, 'buy', 'XAUUSD.mic');
+  assert.ok(gold.entryPrice - gold.stopLoss >= 12);
+  const risk = gold.entryPrice - gold.stopLoss;
+  assert.equal(gold.takeProfit1, Number((gold.entryPrice + risk).toFixed(2)));
+  assert.equal(gold.takeProfit2, Number((gold.entryPrice + risk * 2).toFixed(2)));
+  assert.equal(gold.takeProfit3, Number((gold.entryPrice + risk * 3).toFixed(2)));
+  const yen = resolveScanPrices({ entry_price: 157.408, stop_loss: 157.436 }, 'sell', 'USDJPY');
+  assert.ok(yen.stopLoss - yen.entryPrice >= 0.2);
+  const euro = resolveScanPrices({ entry_price: 1.13309, stop_loss: 1.13322 }, 'sell', 'EURUSD');
+  assert.ok(euro.stopLoss - euro.entryPrice >= 0.0015);
+  const kept = resolveScanPrices({ entry_price: 4155.73, stop_loss: 4100 }, 'buy', 'XAUUSD');
+  assert.equal(kept.stopLoss, 4100);
 });
 
 test('a buy is skipped once the live price has already reached TP1', () => {

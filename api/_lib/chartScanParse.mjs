@@ -226,6 +226,48 @@ export function roundScanPrice(value, decimals) {
   return Number(value.toFixed(decimals));
 }
 
+/**
+ * Auto scans were parking the stop a few ticks off the price, so TP1–TP3
+ * closed in the spread. Keep a wider stop when the model is tighter than this.
+ * A stop that is already farther away stays where it is.
+ */
+export function minimumStopDistance(symbol, price) {
+  const px = Number(price);
+  if (!(px > 0)) return 0;
+  const name = String(symbol || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (!name) return 0;
+  const rules = [
+    [/XAU|GOLD/, 0.0035, 12],
+    [/XAG|SILVER/, 0.004, 0.15],
+    [/BTC/, 0.006, 200],
+    [/ETH/, 0.005, 12],
+    [/USTEC|NAS100|NASDAQ|US100|NDX|USTECH/, 0.0025, 60],
+    [/US30|DJ30|WALLST|DOW/, 0.0022, 80],
+    [/DE30|GER40|GER30|DAX|DE40/, 0.002, 30],
+    [/UK100|FTSE/, 0.002, 12],
+    [/JP225|NI225|JPN225/, 0.002, 80],
+    [/BRENT|UKOIL|USOIL|WTI/, 0.004, 0.4],
+    [/JPY/, 0.0018, 0.2],
+    [/EUR|GBP|AUD|NZD|USD|CAD|CHF/, 0.0015, 0.0015],
+  ];
+  for (const [pattern, pct, floor] of rules) {
+    if (pattern.test(name)) return Math.max(px * pct, floor);
+  }
+  if (px >= 1000) return Math.max(px * 0.002, 15);
+  if (px >= 50) return Math.max(px * 0.002, 0.5);
+  return Math.max(px * 0.0015, 0.0015);
+}
+
+export function expandedRisk(symbol, entryPrice, stopLoss, decimals) {
+  const entry = Number(entryPrice);
+  const stop = Number(stopLoss);
+  const risk = roundScanPrice(Math.abs(entry - stop), decimals);
+  const min = roundScanPrice(minimumStopDistance(symbol, entry), decimals);
+  return min > risk ? min : risk;
+}
+
 export const TP_RATIOS = [1, 2, 3];
 export const MIN_AUTO_TRADE_ACCURACY = 74;
 export const MAX_SCAN_TRADES = 3;
@@ -324,7 +366,7 @@ export function anchorRiskLadder(direction, entryPrice, stopLoss, fillPrice, tak
   const entryR = roundScanPrice(entry, decimals);
   const stopR = roundScanPrice(stop, decimals);
   const fillR = roundScanPrice(fill, decimals);
-  const risk = roundScanPrice(Math.abs(entryR - stopR), decimals);
+  const risk = expandedRisk(options.symbol, entryR, stopR, decimals);
   if (!(risk > 0)) return { ok: false, error: 'Stop distance is zero.' };
   const tp1 = roundScanPrice(side === 'sell' ? entryR - risk : entryR + risk, decimals);
   const throughFirst = side === 'sell' ? fillR <= tp1 : fillR >= tp1;
@@ -368,7 +410,7 @@ export function validateTakeProfit(direction, entryPrice, takeProfit) {
   return 0;
 }
 
-export function resolveScanPrices(parsed, direction) {
+export function resolveScanPrices(parsed, direction, symbol = '') {
   const entryPrice = parsePriceField(parsed, 'entry_price', 'entryPrice', 'entry');
   const stopLoss = parsePriceField(parsed, 'stop_loss', 'stopLoss', 'sl');
   const validated = validateScanPrices(direction, entryPrice, stopLoss);
@@ -385,10 +427,13 @@ export function resolveScanPrices(parsed, direction) {
     };
   }
   const decimals = priceDecimals(validated.entryPrice, validated.stopLoss);
-  const ladder = deriveTakeProfitLadder(direction, validated.entryPrice, validated.stopLoss);
+  const entry = roundScanPrice(validated.entryPrice, decimals);
+  const risk = expandedRisk(symbol, entry, validated.stopLoss, decimals);
+  const stop = roundScanPrice(direction === 'sell' ? entry + risk : entry - risk, decimals);
+  const ladder = deriveTakeProfitLadder(direction, entry, stop > 0 ? stop : validated.stopLoss);
   return {
-    entryPrice: roundScanPrice(validated.entryPrice, decimals),
-    stopLoss: roundScanPrice(validated.stopLoss, decimals),
+    entryPrice: entry,
+    stopLoss: stop > 0 ? stop : roundScanPrice(validated.stopLoss, decimals),
     ...ladder,
     pricesValid: true,
   };
@@ -488,7 +533,7 @@ export function buildScanResponse(parsed, image = '', { demo = false } = {}) {
   }
 
   const priced = alignStopToDirection(parsed, resolved.direction);
-  const prices = resolveScanPrices(priced, resolved.direction);
+  const prices = resolveScanPrices(priced, resolved.direction, symbol);
   if (!prices.pricesValid || resolved.correctionReason === 'structure vs stop conflict') {
     resolved.accuracy = Math.min(resolved.accuracy, 62);
   }

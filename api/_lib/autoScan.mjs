@@ -14,6 +14,7 @@ import {
 import {
   buildScanResponse,
   deriveTakeProfitLadder,
+  expandedRisk,
   isScanTradeable,
   parseChartScanModelText,
   priceDecimals,
@@ -155,15 +156,16 @@ export function lockPayloadToAnalysis(payload, active) {
   const entry = imageEntry > 0 ? imageEntry : storedEntry;
   const storedRisk = Math.abs(storedEntry - Number(active.stopLoss));
   const localRisk = Math.abs(entry - Number(payload.stopLoss));
-  const risk = storedRisk > 0 ? storedRisk : localRisk;
   const accuracy = Number(active.accuracy) || Number(payload.accuracy) || 0;
   const name = payload.symbol || active.brokerSymbol || active.symbol;
+  const seedRisk = storedRisk > 0 ? storedRisk : localRisk;
+  const decimals = priceDecimals(entry, Number(active.stopLoss) || Number(payload.stopLoss));
+  const risk = expandedRisk(name, entry, entry + seedRisk, decimals);
   if (!(entry > 0) || !(risk > 0)) {
     return { ...payload, direction, held: true, accuracy, symbol: name };
   }
   const stop = direction === 'sell' ? entry + risk : entry - risk;
   if (!(stop > 0)) return { ...payload, direction, held: true, accuracy, symbol: name };
-  const decimals = priceDecimals(entry, stop);
   const ladder = deriveTakeProfitLadder(direction, entry, stop);
   const symbol = name;
   return {
@@ -262,7 +264,14 @@ export async function fetchRecentBars(id, symbol, fetchFn = fetch) {
 
 function payloadFromAnalysis(record, brokerSymbol) {
   const direction = record.direction === 'sell' ? 'sell' : 'buy';
-  const takeProfit = Number(record.takeProfit1 || record.takeProfit) || 0;
+  const entry = Number(record.entryPrice) || 0;
+  const stop = Number(record.stopLoss) || 0;
+  const symbol = brokerSymbol || record.symbol || '';
+  const decimals = priceDecimals(entry, stop);
+  const risk = expandedRisk(symbol, entry, stop, decimals);
+  const widenedStop = roundScanPrice(direction === 'sell' ? entry + risk : entry - risk, decimals);
+  const useStop = widenedStop > 0 ? widenedStop : stop;
+  const ladder = deriveTakeProfitLadder(direction, entry, useStop);
   return {
     ok: true,
     demo: false,
@@ -273,12 +282,12 @@ function payloadFromAnalysis(record, brokerSymbol) {
     timeframe: record.timeframe || '',
     direction,
     summary: record.summary || `Held ${direction.toUpperCase()} while ${analysisKey(brokerSymbol) || brokerSymbol} is still in this trade.`,
-    entryPrice: Number(record.entryPrice) || 0,
-    stopLoss: Number(record.stopLoss) || 0,
-    takeProfit,
-    takeProfit1: takeProfit,
-    takeProfit2: Number(record.takeProfit2) || 0,
-    takeProfit3: Number(record.takeProfit3) || 0,
+    entryPrice: roundScanPrice(entry, decimals) || entry,
+    stopLoss: useStop,
+    takeProfit: ladder.takeProfit,
+    takeProfit1: ladder.takeProfit1,
+    takeProfit2: ladder.takeProfit2,
+    takeProfit3: ladder.takeProfit3,
     pricesValid: true,
     source: 'auto',
     market: record.symbol || analysisKey(brokerSymbol),

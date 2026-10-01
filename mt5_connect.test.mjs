@@ -198,7 +198,7 @@ test('market buy is not sent after the 1:1 target is already reached', async () 
     () =>
       enrichOrderSendPath(
         '/OrderSend?id=tok&symbol=USDJPY&operation=Buy&volume=0.01&entry=157.331&stoploss=157.290&takeprofit=157.372&slippage=30',
-        quoteFetch(157.375, 157.372),
+        quoteFetch(157.62, 157.617),
       ),
     (err) => err instanceof Mt5LevelError && /TP1/.test(err.message),
   );
@@ -210,8 +210,8 @@ test('a new START trade still opens after the scanned TP1 with a fresh 1:1 1:2 1
     quoteFetch(157.375, 157.372),
   );
   assert.match(path, /price=157\.375/);
-  assert.match(path, /stoploss=157\.334/);
-  assert.match(path, /takeprofit=157\.416/);
+  assert.match(path, /stoploss=157\.092/);
+  assert.match(path, /takeprofit=157\.658/);
   assert.equal(/fresh=/.test(path), false);
   assert.equal(/entry=/.test(path), false);
 });
@@ -222,7 +222,7 @@ test('market buy take profits are rebuilt 1:1 1:2 1:3 from the live ask', async 
     quoteFetch(157.35, 157.347),
   );
   assert.match(path, /price=157\.35(?:0+)?/);
-  assert.match(path, /stoploss=157\.309/);
-  assert.match(path, /takeprofit=157\.432/);
+  assert.match(path, /stoploss=157\.067/);
+  assert.match(path, /takeprofit=157\.916/);
   assert.equal(/entry=/.test(path), false);
 });
