@@ -43,7 +43,7 @@ test('the ring empties as the countdown falls', () => {
 
 test('header status matches the engine phase', () => {
   assert.equal(headerStatus('ready'), 'READY');
-  assert.equal(headerStatus('scanning'), 'SCANNING');
+  assert.equal(headerStatus('scanning'), 'ANALYZING');
   assert.equal(headerStatus('executing'), 'EXECUTING');
   assert.equal(headerStatus('open'), 'TRADE OPEN');
   assert.equal(headerStatus('stopped'), 'STOPPED');

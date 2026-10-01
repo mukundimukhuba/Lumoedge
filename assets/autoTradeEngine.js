@@ -8,7 +8,7 @@ export function headerStatus(phase) {
   if (phase === 'starting') return 'STARTING';
   if (phase === 'executing') return 'EXECUTING';
   if (phase === 'nosignal' || phase === 'waiting') return 'WAITING';
-  if (phase === 'scanning' || phase === 'confirming') return 'SCANNING';
+  if (phase === 'scanning' || phase === 'confirming' || phase === 'starting') return 'ANALYZING';
   return 'LIVE ENGINE';
 }
 
@@ -59,15 +59,12 @@ function money(value) {
 
 function cssText() {
   return `
-.lte-shell{position:fixed;inset:0;z-index:260;overflow:auto;color:#f4f7fb;background:
-  radial-gradient(900px 420px at 50% -12%, rgba(99,102,241,.35), transparent 55%),
-  radial-gradient(700px 380px at 100% 0%, rgba(232,121,249,.16), transparent 46%),
-  #07080d;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.lte-shell{position:fixed;inset:0;z-index:260;overflow:auto;display:flex;justify-content:center;align-items:flex-start;padding:calc(78px + env(safe-area-inset-top)) 18px calc(22px + env(safe-area-inset-bottom));background:rgba(2,4,10,.38);backdrop-filter:blur(3px);color:#f4f7fb;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 .lte-shell *{box-sizing:border-box}
-.lte-wrap{width:min(100%,440px);margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
+.lte-wrap{width:min(100%,360px);margin:0;padding:16px 16px 14px;border-radius:22px;background:linear-gradient(180deg,rgba(16,18,32,.96),rgba(8,10,18,.96));border:1px solid rgba(125,211,252,.42);box-shadow:0 0 0 1px rgba(168,85,247,.2),0 22px 50px rgba(0,0,0,.48),0 0 32px rgba(99,102,241,.28)}
 .lte-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .lte-kicker{margin:0;font-size:11px;letter-spacing:.22em;color:#67e8f9;font-weight:700}
-.lte-title{margin:4px 0 0;font-size:22px;line-height:1.1;font-weight:760;letter-spacing:.02em}
+.lte-title{margin:4px 0 0;font-size:18px;line-height:1.15;font-weight:760;letter-spacing:.02em}
 .lte-powered{margin:6px 0 0;color:#94a3b8;font-size:12px}
 .lte-x{width:40px;height:40px;border-radius:12px;border:1px solid rgba(125,211,252,.35);background:rgba(15,23,42,.55);color:#e2e8f0;font-size:22px;line-height:1;cursor:pointer}
 .lte-pill{display:inline-flex;align-items:center;gap:8px;margin-top:14px;padding:6px 10px;border-radius:999px;border:1px solid rgba(125,211,252,.35);background:rgba(15,23,42,.55);font-size:11px;letter-spacing:.14em;font-weight:750}
@@ -75,7 +72,7 @@ function cssText() {
 .lte-pill.is-live .lte-dot{background:#67e8f9;animation:lte-pulse 1.6s ease-out infinite}
 .lte-pill.is-open .lte-dot{background:#34d399;animation:lte-pulse 1.6s ease-out infinite}
 .lte-pill.is-error .lte-dot{background:#fb7185}
-.lte-card{margin-top:14px;padding:14px;border-radius:18px;background:rgba(12,16,28,.72);border:1px solid rgba(125,211,252,.22);box-shadow:0 0 0 1px rgba(167,139,250,.08), 0 16px 40px rgba(0,0,0,.28);backdrop-filter:blur(16px)}
+.lte-card{margin-top:12px;padding:0;border:0;background:transparent;box-shadow:none}
 .lte-label{margin:0 0 10px;font-size:11px;letter-spacing:.16em;color:#94a3b8;font-weight:700}
 .lte-chips{display:flex;flex-wrap:wrap;gap:8px}
 .lte-chip{min-height:40px;padding:8px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.28);background:rgba(15,23,42,.45);color:#e2e8f0;font:inherit;font-size:13px;font-weight:750;letter-spacing:.04em;cursor:pointer}
@@ -95,18 +92,19 @@ function cssText() {
 .lte-go:disabled{opacity:.45;cursor:default}
 .lte-go.is-stop{color:#fff;background:linear-gradient(90deg,#1e1b4b,#312e81);box-shadow:0 0 0 1px rgba(129,140,248,.7), 0 0 24px rgba(99,102,241,.45);animation:lte-glow 1.8s ease-in-out infinite}
 .lte-run{margin:8px 0 0;text-align:center;font-size:11px;letter-spacing:.18em;color:#c4b5fd;font-weight:750}
-.lte-stage{position:relative;overflow:hidden}
+.lte-stage{position:relative;overflow:hidden;padding:12px;border-radius:16px;border:1px solid rgba(125,211,252,.2);background:rgba(255,255,255,.03)}
 .lte-stage.is-scan{background-image:linear-gradient(rgba(103,232,249,.05) 1px, transparent 1px),linear-gradient(90deg, rgba(103,232,249,.05) 1px, transparent 1px);background-size:22px 22px;animation:lte-grid 8s linear infinite}
-.lte-ring-wrap{display:grid;place-items:center;min-height:196px}
-.lte-ring{width:168px;height:168px;position:relative}
+.lte-ring-wrap{display:grid;place-items:center;min-height:148px}
+.lte-ring{width:132px;height:132px;position:relative}
 .lte-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
 .lte-ring circle{fill:none;stroke-width:6}
 .lte-ring .track{stroke:rgba(148,163,184,.2)}
 .lte-ring .prog{stroke-linecap:round;transition:stroke-dashoffset .9s linear}
 .lte-ring-copy{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:28px}
-.lte-ring-copy b{font-size:28px;letter-spacing:.04em;font-weight:760}
+.lte-ring-copy b{font-size:22px;letter-spacing:.04em;font-weight:760}
 .lte-ring-copy small{color:#94a3b8;letter-spacing:.14em;font-size:10px;font-weight:700}
-.lte-scan-title{margin:0;font-size:15px;font-weight:760;letter-spacing:.08em}
+.lte-scan-title{margin:0;font-size:18px;font-weight:760;letter-spacing:.01em}
+.lte-scan-symbol{margin:4px 0 0;color:#67e8f9;font-size:12px;letter-spacing:.12em;font-weight:700}
 .lte-bar{height:8px;margin:12px 0;border-radius:99px;background:rgba(148,163,184,.16);overflow:hidden}
 .lte-bar i{display:block;height:100%;width:40%;border-radius:inherit;background:linear-gradient(90deg,#22d3ee,#818cf8,#e879f9);animation:lte-bar 1.2s ease-in-out infinite}
 .lte-steps{list-style:none;margin:0;padding:0;display:grid;gap:8px}
@@ -255,11 +253,11 @@ export async function openAutoEngine(opts = {}) {
     stageEl.hidden = !(showScan || showCount || showSignal || showEmpty || showError);
     stageEl.classList.toggle('is-scan', showScan);
     if (showScan) {
-      const title = phase === 'confirming' ? 'ANALYZING MARKET...' : `SCANNING ${state.symbol || 'MARKET'}`;
+      const title = 'Analyzing the market';
       const steps = ['Market structure', 'Momentum', 'Trend', 'Volatility']
         .map((name, index) => `<li class="${index <= state.scanStep ? 'is-hot' : ''}">${index <= state.scanStep ? '●' : '○'} ${name}</li>`)
         .join('');
-      stageEl.innerHTML = `<p class="lte-scan-title">${title}</p><div class="lte-bar" aria-hidden="true"><i></i></div><ul class="lte-steps">${steps}</ul>`;
+      stageEl.innerHTML = `<p class="lte-scan-title">${title}</p>${state.symbol ? `<p class="lte-scan-symbol">${state.symbol}</p>` : ''}<div class="lte-bar" aria-hidden="true"><i></i></div><ul class="lte-steps">${steps}</ul>`;
       return;
     }
     if (showCount || showSignal || showEmpty || showError) {
@@ -335,16 +333,17 @@ export async function openAutoEngine(opts = {}) {
 
   function paintChrome() {
     let status = headerStatus(state.phase);
-    if (state.running && !['error', 'open', 'stopped', 'ready'].includes(state.phase)) status = 'LIVE ENGINE';
+    if (state.running && ['starting', 'scanning', 'confirming'].includes(state.phase)) status = 'ANALYZING';
+    else if (state.running && !['error', 'open', 'stopped', 'ready'].includes(state.phase)) status = 'LIVE ENGINE';
     if (!state.running && state.phase === 'nosignal') status = 'STOPPED';
     pillText.textContent = status;
-    pill.classList.toggle('is-live', state.running || status === 'LIVE ENGINE' || status === 'SCANNING');
+    pill.classList.toggle('is-live', state.running || status === 'LIVE ENGINE' || status === 'ANALYZING');
     pill.classList.toggle('is-open', state.phase === 'open');
     pill.classList.toggle('is-error', state.phase === 'error');
     goBtn.hidden = !state.running;
     goBtn.textContent = 'STOP ENGINE';
     goBtn.classList.add('is-stop');
-    runEl.hidden = !state.running;
+    runEl.hidden = !state.running || ['starting', 'scanning', 'confirming'].includes(state.phase);
     const opened = state.trades.reduce((sum, trade) => sum + (Number(trade.opened) || 0), 0);
     noteEl.textContent = opened ? `Opened this pass: ${opened}.` : '';
   }
