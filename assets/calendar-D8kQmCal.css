@@ -28,6 +28,14 @@
 .calendar-table th{text-align:left;color:var(--muted,rgba(232,238,252,.55));padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.08)}
 .calendar-table td{padding:9px 6px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
 .calendar-empty{margin:0;padding:18px 8px;text-align:center;color:var(--muted,rgba(232,238,252,.55))}
+.calendar-float{
+  position:fixed;left:16px;right:16px;bottom:calc(88px + env(safe-area-inset-bottom));
+  z-index:70;width:min(420px,calc(100% - 32px));margin:0 auto;
+  border-radius:18px;padding:14px 16px;display:grid;gap:8px;
+  border:1px solid rgba(125,211,252,.55);background:rgba(6,10,20,.94);
+  box-shadow:0 18px 40px rgba(0,0,0,.45),0 0 24px rgba(56,189,248,.28)
+}
+.calendar-float strong{font-size:18px;letter-spacing:.04em}
 .calendar-modal{
   position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:18px;
   background:rgba(2,6,14,.72);backdrop-filter:blur(10px)

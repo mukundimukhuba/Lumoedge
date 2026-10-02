@@ -122,6 +122,12 @@ export function botsMatch(licenseOrBot, botId) {
   return Boolean(want && (id === want || name === want));
 }
 
+export function eaStem(value) {
+  return botKey(value)
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/v\d+$/g, '');
+}
+
 export function ownerIsSuper(entry) {
   const owner = String(entry?.ownerAdminId || entry?.adminId || '').trim();
   return owner === SUPER_ADMIN_ID;
@@ -364,11 +370,23 @@ export function createCalendarEngine(io = firebaseIo) {
     return { ...DEFAULT_SUPER_EA };
   }
 
+  function namesShareStem(left, right) {
+    const a = eaStem(left);
+    const b = eaStem(right);
+    return Boolean(a && b && a === b);
+  }
+
   function signalMatchesLicense(signal, license) {
     if (!signal || !license?.ok) return false;
     if (botsMatch(signal, license.botId) || botsMatch(license.license, signal.botId) || botsMatch(license.license, signal.botName)) {
       return true;
     }
+    const licenseNames = [license.botId, license.botName, license.license?.eaId, license.license?.eaName];
+    const signalNames = [signal.botId, signal.botName];
+    if (licenseNames.some((name) => signalNames.some((other) => namesShareStem(name, other)))) return true;
+    const owner = String(license.ownerAdminId || license.license?.ownerAdminId || '').trim();
+    const author = String(signal.createdBy || '').trim();
+    if (owner && author && owner === author) return true;
     return ownerIsSuper(license.license) && (botsMatch(signal, SUPER_ADMIN_ID) || isSuperEa(signal));
   }
 
@@ -396,14 +414,19 @@ export function createCalendarEngine(io = firebaseIo) {
           String(row?.time || '') === (time || formatClock(at)),
       );
     const id = existing?.id || requestedId || io.id();
+    const official = existing && isOfficialNewsEvent(existing);
     const event = {
       id,
       name: newsName || name,
-      date: date || formatDate(at),
-      time: time || formatClock(at),
-      currency: String(input?.currency || existing?.currency || '').trim().toUpperCase(),
-      impact: normalizeImpact(input?.impact || existing?.impact),
-      at: at ? new Date(at).toISOString() : existing?.at || '',
+      date: official ? existing.date || date || formatDate(at) : date || formatDate(at),
+      time: official ? existing.time || formatClock(at) : time || formatClock(at),
+      currency: official
+        ? String(existing.currency || 'USD').trim().toUpperCase()
+        : String(input?.currency || existing?.currency || '').trim().toUpperCase(),
+      impact: official ? normalizeImpact(existing.impact) : normalizeImpact(input?.impact || existing?.impact),
+      at: official && existing.at ? existing.at : at ? new Date(at).toISOString() : existing?.at || '',
+      source: existing?.source || '',
+      timezone: existing?.timezone || '',
       updatedAt: io.nowIso(),
       updatedBy: actorId || existing?.updatedBy || '',
       createdAt: existing?.createdAt || io.nowIso(),

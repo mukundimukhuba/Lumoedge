@@ -5,7 +5,7 @@ import { r as apiUrl } from "./apiBase-CDudBPOx.js";
 if (typeof document !== "undefined" && !document.querySelector("link[data-calendar-css]")) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = "/assets/calendar-D8kQmCal.css";
+  link.href = "/assets/calendar-D8kQmCal.css?v=calfloat1";
   link.dataset.calendarCss = "1";
   document.head.appendChild(link);
 }

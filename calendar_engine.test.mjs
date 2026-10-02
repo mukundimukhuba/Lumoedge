@@ -184,6 +184,73 @@ test('Unlimited Bull students see the signal and other EA students do not', asyn
   assert.equal(other.events.some((event) => event.name === 'NFP'), true);
 });
 
+test('the sent NFP signal reaches the owner students and keeps the official release', async () => {
+  const io = createMemoryIo('2026-10-02T09:33:00.000Z');
+  const engine = createCalendarEngine(io);
+  await io.write('lumo/store/workspaces/LM-004821', {
+    eas: [{ id: 'ea-seed-1', name: 'UNLIMITED BULLv1' }],
+  });
+  await io.write('lumo/vault', [
+    {
+      id: 'lic-bull',
+      key: 'LUMO-BULL-TEST-AAAA',
+      status: 'assigned',
+      assignedEmail: 'bull@student.com',
+      eaId: 'ea-unlimited-bull',
+      eaName: 'Unlimited bull',
+      ownerAdminId: 'LM-004821',
+    },
+    {
+      id: 'lic-other',
+      key: 'LUMO-OTHR-TEST-BBBB',
+      status: 'assigned',
+      assignedEmail: 'other@student.com',
+      eaId: 'ea-other',
+      eaName: 'Other Bot',
+      ownerAdminId: 'LM-222222',
+    },
+  ]);
+  await io.write('lumo/economicEvents/news-nfp-2026-10-02', {
+    id: 'news-nfp-2026-10-02',
+    name: 'NFP',
+    date: '2026-10-02',
+    time: '08:30',
+    currency: 'USD',
+    impact: 'HIGH',
+    at: '2026-10-02T12:30:00.000Z',
+    source: 'live',
+  });
+  const created = await engine.createSignal(
+    {
+      eventName: 'NFP',
+      eventId: 'news-nfp-2026-10-02',
+      date: '2026-10-02',
+      time: '14:30',
+      currency: 'ZAR',
+      symbol: 'XAUUSD',
+      direction: 'BUY',
+      message: 'NFP BUY',
+      activationAt: '2026-10-02T12:30:00.000Z',
+      expirationHours: 5,
+      status: 'published',
+    },
+    'LM-004821',
+  );
+  assert.equal(created.ok, true);
+  assert.equal(created.signal.eventId, 'news-nfp-2026-10-02');
+  const event = await io.read('lumo/economicEvents/news-nfp-2026-10-02');
+  assert.equal(event.currency, 'USD');
+  assert.equal(event.time, '08:30');
+  const bull = await engine.listStudentCalendar('bull@student.com', 'LUMO-BULL-TEST-AAAA');
+  assert.equal(bull.ok, true);
+  assert.equal(bull.signals.length, 1);
+  assert.equal(bull.signals[0].symbol, 'XAUUSD');
+  assert.equal(bull.signals[0].direction, 'BUY');
+  assert.equal(bull.signals[0].eventId, 'news-nfp-2026-10-02');
+  const other = await engine.listStudentCalendar('other@student.com', 'LUMO-OTHR-TEST-BBBB');
+  assert.equal(other.signals.length, 0);
+});
+
 test('expired signals disappear from the student calendar and cannot execute', async () => {
   const io = createMemoryIo('2026-09-16T14:31:00.000Z');
   const engine = createCalendarEngine(io);

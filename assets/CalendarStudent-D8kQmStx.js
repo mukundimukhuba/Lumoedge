@@ -5,7 +5,7 @@ import { r as apiUrl } from "./apiBase-CDudBPOx.js";
 if (typeof document !== "undefined" && !document.querySelector("link[data-calendar-css]")) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = "/assets/calendar-D8kQmCal.css";
+  link.href = "/assets/calendar-D8kQmCal.css?v=calfloat1";
   link.dataset.calendarCss = "1";
   document.head.appendChild(link);
 }
@@ -212,10 +212,19 @@ function CalendarStudentPage() {
 
   const events = data?.events || [];
   const signals = data?.signals || [];
-  const byEvent = new Map(signals.map((row) => [row.eventId, row]));
-  const extraSignals = signals.filter(
-    (row) => !events.some((event) => event.id === row.eventId || event.name === row.eventName),
-  );
+  const sameNews = (event, row) => {
+    if (!event || !row) return false;
+    if (row.eventId && event.id && row.eventId === event.id) return true;
+    const name = String(event.name || "").trim().toUpperCase();
+    const signalName = String(row.eventName || "").trim().toUpperCase();
+    if (!name || name !== signalName) return false;
+    return !row.eventDate || !event.date || row.eventDate === event.date;
+  };
+  const signalFor = (event) => signals.find((row) => sameNews(event, row)) || null;
+  const extraSignals = signals.filter((row) => !events.some((event) => sameNews(event, row)));
+  const floating = signals
+    .filter((row) => row.status === "active" || row.status === "upcoming")
+    .sort((a, b) => Date.parse(a.activationAt || 0) - Date.parse(b.activationAt || 0))[0];
 
   return Y.jsxs("div", {
     className: "calendar-page",
@@ -234,7 +243,7 @@ function CalendarStudentPage() {
                   EventCard,
                   {
                     event,
-                    signal: byEvent.get(event.id),
+                    signal: signalFor(event),
                     nowMs,
                     onExecute: setConfirm,
                   },
@@ -264,6 +273,27 @@ function CalendarStudentPage() {
             ],
           })
         : Y.jsx("p", { className: "calendar-empty", children: data ? "No active economic events." : "Loading calendar…" }),
+      floating
+        ? Y.jsxs("aside", {
+            className: "calendar-float",
+            role: "status",
+            children: [
+              Y.jsx("p", { className: "calendar-kicker", style: { margin: 0 }, children: "SIGNAL" }),
+              Y.jsxs("strong", { children: [floating.eventName || "NEWS", " ", floating.symbol, " ", floating.direction] }),
+              floating.message ? Y.jsx("p", { className: "calendar-lead", style: { margin: 0 }, children: floating.message }) : null,
+              floating.executed
+                ? Y.jsx("p", { className: "calendar-count", children: "TRADE ALREADY EXECUTED FOR THIS SIGNAL" })
+                : floating.status === "active"
+                  ? Y.jsx("button", {
+                      type: "button",
+                      className: "btn btn-blue",
+                      onClick: () => setConfirm(floating),
+                      children: "EXECUTE TRADE",
+                    })
+                  : Y.jsx("p", { className: "calendar-lead", style: { margin: 0 }, children: "Execute becomes available when the news window opens." }),
+            ],
+          })
+        : null,
       confirm
         ? Y.jsx(ConfirmModal, {
             signal: confirm,
