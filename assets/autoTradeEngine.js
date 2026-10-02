@@ -16,7 +16,7 @@ export function countdownCopy(left) {
   const n = Math.max(0, Math.min(15, Math.round(Number(left) || 0)));
   const time = `00:${String(n).padStart(2, '0')}`;
   if (n <= 10) return { kicker: 'NEXT SCAN IN', time, sub: '' };
-  return { kicker: 'AUTO SCAN', time, sub: 'NEXT ANALYSIS' };
+  return { kicker: 'ANALYZING', time, sub: '' };
 }
 
 export function ringMetrics(left, total = 15, radius = RING_RADIUS) {

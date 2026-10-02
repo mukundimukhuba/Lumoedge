@@ -4,9 +4,9 @@ import { countdownCopy, headerStatus, ringMetrics } from './assets/autoTradeEngi
 
 test('countdown copy switches at 10 seconds without skipping', () => {
   const early = countdownCopy(15);
-  assert.equal(early.kicker, 'AUTO SCAN');
+  assert.equal(early.kicker, 'ANALYZING');
   assert.equal(early.time, '00:15');
-  assert.equal(early.sub, 'NEXT ANALYSIS');
+  assert.equal(early.sub, '');
   const late = countdownCopy(10);
   assert.equal(late.kicker, 'NEXT SCAN IN');
   assert.equal(late.time, '00:10');
