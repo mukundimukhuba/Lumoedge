@@ -165,6 +165,12 @@ export async function handleApi(req, res, pathname) {
       return true;
     }
 
+    if (pathname === '/api/supabase/status' && req.method === 'GET') {
+      const { supabaseStatus } = await import('./supabase.mjs');
+      json(res, 200, await supabaseStatus());
+      return true;
+    }
+
     const specialHandled = await handleSpecialRoutes(req, res, {
       json,
       pathname,
