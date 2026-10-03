@@ -21,6 +21,7 @@ import {
   verifyMentorLogin,
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
+import { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } from './phoneRecover.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleSpecialRoutes } from './specialRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
@@ -315,22 +316,25 @@ export async function handleApi(req, res, pathname) {
 
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
-      json(res, 200, publicDbSnapshot({
-        ...db,
-        vault: [],
-        images: {},
-        clients: [],
-        sessions: {},
-        store: { workspaces: {} },
-      }));
+      json(res, 200, publicDbSnapshot(redactPortalDb(db)));
       return true;
     }
 
     if (pathname === '/api/db' && req.method === 'PUT') {
       const body = await readBody(req);
+      let stored = null;
+      try {
+        stored = await mergeRecoveryPatch(body);
+      } catch {
+        stored = null;
+      }
+      if (bodyHasPrivateLicenses(body) && !stored) {
+        json(res, 503, { ok: false, error: 'Could not store licenses' });
+        return true;
+      }
       const { db, sha } = await loadDb();
       const saved = await saveDb(mergeDatabases(db, body), sha);
-      json(res, 200, publicDbSnapshot(saved.db));
+      json(res, 200, publicDbSnapshot(redactPortalDb(saved.db)));
       return true;
     }
 
@@ -751,26 +755,25 @@ export async function handleApi(req, res, pathname) {
     }
 
     if (pathname === '/api/vault' && req.method === 'GET') {
-      const { db } = await loadDb();
-      const remoteVault = await withTimeout(loadFirebaseVault(), 8000);
-      json(res, 200, (Array.isArray(remoteVault) && remoteVault.length ? remoteVault : db.vault) || []);
+      // License keys stay in private storage. The public portal does not receive them.
+      json(res, 200, []);
       return true;
     }
 
     if (pathname === '/api/vault' && req.method === 'PUT') {
       const body = await readBody(req);
-      const { db, sha } = await loadDb();
-      const incoming = Array.isArray(body) ? body : body.vault || db.vault;
-      const remoteVault = await withTimeout(loadFirebaseVault(), 8000);
-      db.vault = mergeDatabases(
-        { vault: Array.isArray(remoteVault) && remoteVault.length ? remoteVault : db.vault },
-        { vault: incoming },
-      ).vault;
-      await saveDb(db, sha);
-      if (Array.isArray(db.vault)) {
-        await withTimeout(firebaseWrite('lumo/vault', db.vault), 8000);
+      const incoming = Array.isArray(body) ? body : body.vault || [];
+      let stored = null;
+      try {
+        stored = await mergeRecoveryPatch({ vault: incoming, images: {} });
+      } catch {
+        stored = null;
       }
-      json(res, 200, db.vault);
+      if (!stored) {
+        json(res, 503, { ok: false, error: 'Could not store licenses' });
+        return true;
+      }
+      json(res, 200, []);
       return true;
     }
 
@@ -790,46 +793,45 @@ export async function handleApi(req, res, pathname) {
         json(res, 413, { error: 'File too large for cloud upload (max ~6 MB image)' });
         return true;
       }
-      const { db, sha } = await loadDb();
-      db.images = { ...(db.images || {}), [key]: dataUrl };
-      await saveDb(db, sha);
-      // Memory-only store is wiped on every cold start / redeploy — mirror
-      // into Firebase RTDB (the same durable store the client already reads
-      // EA branding images from) so an upload survives past this instance.
-      await withTimeout(firebaseWrite(`lumo/images/${encodeURIComponent(key)}`, dataUrl));
+      const { savePrivateImage } = await import('./imageStore.mjs');
+      const savedImage = await savePrivateImage(key, dataUrl);
+      if (!savedImage) {
+        json(res, 503, { error: 'Could not store image' });
+        return true;
+      }
       json(res, 200, { ok: true, url: `/api/images/${encodeURIComponent(key)}` });
       return true;
     }
 
     if (pathname.startsWith('/api/images/') && (req.method === 'GET' || req.method === 'HEAD')) {
       const key = decodeURIComponent(pathname.replace('/api/images/', '')).trim();
-      const { db } = await loadDb();
-      let dataUrl = db.images?.[key];
-      if (!dataUrl || !String(dataUrl).startsWith('data:')) {
-        // Cold-start miss — fall back to the durable Firebase copy.
-        const remote = await withTimeout(firebaseRead(`lumo/images/${encodeURIComponent(key)}`));
-        if (remote && String(remote).startsWith('data:')) dataUrl = remote;
+      const { loadPrivateImage } = await import('./imageStore.mjs');
+      let loaded = await loadPrivateImage(key);
+      if (!loaded) {
+        const { db } = await loadDb();
+        const dataUrl = db.images?.[key];
+        const match = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl || ''));
+        if (match) loaded = { contentType: match[1], buffer: Buffer.from(match[2], 'base64') };
       }
-      if (!dataUrl || !String(dataUrl).startsWith('data:')) {
+      if (!loaded) {
+        const remote = await withTimeout(firebaseRead(`lumo/images/${encodeURIComponent(key)}`));
+        const match = /^data:([^;]+);base64,(.+)$/s.exec(String(remote || ''));
+        if (match) loaded = { contentType: match[1], buffer: Buffer.from(match[2], 'base64') };
+      }
+      if (!loaded?.buffer?.length) {
         json(res, 404, { error: 'Image not found' });
         return true;
       }
-      const m = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl));
-      if (!m) {
-        json(res, 404, { error: 'Invalid image' });
-        return true;
-      }
-      const buf = Buffer.from(m[2], 'base64');
       res.statusCode = 200;
-      res.setHeader('Content-Type', m[1] || 'image/jpeg');
+      res.setHeader('Content-Type', loaded.contentType || 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=300');
       res.setHeader('Access-Control-Allow-Origin', '*');
       if (req.method === 'HEAD') {
-        res.setHeader('Content-Length', String(buf.length));
+        res.setHeader('Content-Length', String(loaded.buffer.length));
         res.end();
         return true;
       }
-      res.end(buf);
+      res.end(loaded.buffer);
       return true;
     }
 

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { phoneSnapshotToPatch, stripPhotos } from './api/_lib/phoneRecover.mjs';
+import {
+  bodyHasPrivateLicenses,
+  phoneSnapshotToPatch,
+  prepareLicensePatch,
+  redactPortalDb,
+  stripPhotos,
+} from './api/_lib/phoneRecover.mjs';
 
 test('phone snapshot keeps the license and robot name and drops pictures', () => {
   const patch = phoneSnapshotToPatch({
@@ -39,15 +45,49 @@ test('phone snapshot keeps the license and robot name and drops pictures', () =>
   const saved = JSON.stringify(patch);
   assert.equal(saved.includes('data:image'), false);
   assert.equal(saved.includes('blob:'), false);
-  assert.equal(saved.includes('img:profile'), false);
   assert.equal(saved.includes('should-not-save'), false);
-  assert.equal(saved.includes('customMedia'), false);
+  assert.equal(patch.store.workspaces['LM-100001'].licenses[0].eaImage, 'img:profile-LM-100001');
   assert.equal(patch.vault.some((entry) => entry.key === 'LUMO-TEST-0001' && entry.eaName === 'GHOSTFANG PRIME AI'), true);
   assert.equal(patch.vault.some((entry) => entry.key === 'LUMO-TEST-0001' && entry.mainText === 'AL-CAPONE'), true);
   assert.equal(patch.vault.some((entry) => entry.key === 'LUMO-TEST-0002' && entry.eaName === 'Ea bulls vpro'), true);
   assert.equal(patch.clients.some((entry) => entry.email === 'student@example.com'), true);
   assert.equal(patch.store.workspaces['LM-100001'].licenses[0].eaName, 'Ea bulls vpro');
   assert.equal(patch.images && Object.keys(patch.images).length, 0);
+});
+
+test('portal save keeps license keys and hides them from the public copy', () => {
+  const patch = prepareLicensePatch({
+    vault: [{ key: 'LUMO-TEST-0003', eaName: 'Robot', eaImage: 'data:image/png;base64,AAAA' }],
+    store: {
+      workspaces: {
+        'LM-9': {
+          licenses: [{ key: 'LUMO-TEST-0004', eaName: 'Other', eaImage: '/api/images/profile-LM-9' }],
+        },
+      },
+    },
+    revokedKeys: ['LUMO-TEST-0005'],
+    images: { hero: 'data:image/png;base64,BBBB' },
+  });
+  const saved = JSON.stringify(patch);
+  assert.equal(saved.includes('data:image'), false);
+  assert.equal(patch.vault.some((entry) => entry.key === 'LUMO-TEST-0003' && entry.eaName === 'Robot'), true);
+  assert.equal(
+    patch.vault.some((entry) => entry.key === 'LUMO-TEST-0004' && entry.eaImage === '/api/images/profile-LM-9'),
+    true,
+  );
+  assert.deepEqual(patch.revokedKeys, ['LUMO-TEST-0005']);
+  const visible = redactPortalDb({
+    vault: patch.vault,
+    revokedKeys: patch.revokedKeys,
+    store: patch.store,
+    clients: [{ email: 'student@example.com' }],
+  });
+  assert.deepEqual(visible.vault, []);
+  assert.deepEqual(visible.revokedKeys, []);
+  assert.deepEqual(visible.clients, []);
+  assert.deepEqual(visible.store.workspaces, {});
+  assert.equal(bodyHasPrivateLicenses(patch), true);
+  assert.equal(bodyHasPrivateLicenses({ images: { a: '/api/images/a' } }), false);
 });
 
 test('a long picture string is removed from any saved field', () => {

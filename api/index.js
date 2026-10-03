@@ -415,16 +415,26 @@ export default async function handler(req, res) {
 
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
-      send(res, 200, db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      const { redactPortalDb } = await import('./_lib/phoneRecover.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(db)));
       return;
     }
 
     if (pathname === '/api/db' && req.method === 'PUT') {
       const body = await readBody(req);
+      const { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } = await import(
+        './_lib/phoneRecover.mjs'
+      );
+      const stored = await mergeRecoveryPatch(body);
+      if (bodyHasPrivateLicenses(body) && !stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
       const { db, sha } = await loadDb();
-      // Merge only — never replace whole lists with empties from a partial client sync
       const saved = await saveDb(mergeDatabases(db, body), sha);
-      send(res, 200, saved.db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(saved.db)));
       return;
     }
 
@@ -535,17 +545,20 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/vault' && req.method === 'GET') {
-      const { db } = await loadDb();
-      send(res, 200, db.vault || []);
+      send(res, 200, []);
       return;
     }
 
     if (pathname === '/api/vault' && req.method === 'PUT') {
       const body = await readBody(req);
-      const { db, sha } = await loadDb();
-      db.vault = Array.isArray(body) ? body : body.vault || db.vault;
-      await saveDb(db, sha);
-      send(res, 200, db.vault);
+      const incoming = Array.isArray(body) ? body : body.vault || [];
+      const { mergeRecoveryPatch } = await import('./_lib/phoneRecover.mjs');
+      const stored = await mergeRecoveryPatch({ vault: incoming, images: {} });
+      if (!stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
+      send(res, 200, []);
       return;
     }
 
@@ -627,13 +640,12 @@ export default async function handler(req, res) {
         send(res, 413, { error: 'File too large for cloud upload' });
         return;
       }
-      const { db, sha } = await loadDb();
-      db.images = { ...(db.images || {}), [key]: dataUrl };
-      await saveDb(db, sha);
-      try {
-        const { firebaseWrite } = await import('./_lib/clientMerge.mjs');
-        await withTimeout(firebaseWrite(`lumo/images/${encodeURIComponent(key)}`, dataUrl));
-      } catch {}
+      const { savePrivateImage } = await import('./_lib/imageStore.mjs');
+      const savedImage = await savePrivateImage(key, dataUrl);
+      if (!savedImage) {
+        send(res, 503, { error: 'Could not store image' });
+        return;
+      }
       send(res, 200, { ok: true, url: `/api/images/${encodeURIComponent(key)}`, key });
       return;
     }
@@ -648,27 +660,20 @@ export default async function handler(req, res) {
     if (pathname.startsWith('/api/media/') && (req.method === 'GET' || req.method === 'HEAD')) {
       const raw = decodeURIComponent(pathname.replace('/api/media/', '')).trim();
       const key = raw.replace(/\.[a-z0-9]+$/i, '');
-      const { db } = await loadDb();
-      let dataUrl = db.images?.[key] || db.images?.[raw];
-      if (!dataUrl || !String(dataUrl).startsWith('data:')) {
-        try {
-          const { firebaseRead } = await import('./_lib/clientMerge.mjs');
-          const remote =
-            (await withTimeout(firebaseRead(`lumo/images/${encodeURIComponent(key)}`))) ||
-            (await withTimeout(firebaseRead(`lumo/images/${encodeURIComponent(raw)}`)));
-          if (remote && String(remote).startsWith('data:')) dataUrl = remote;
-        } catch {}
+      const { loadPrivateImage } = await import('./_lib/imageStore.mjs');
+      let loaded = (await loadPrivateImage(key)) || (await loadPrivateImage(raw));
+      if (!loaded) {
+        const { db } = await loadDb();
+        const dataUrl = db.images?.[key] || db.images?.[raw];
+        const match = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl || ''));
+        if (match) loaded = { contentType: match[1], buffer: Buffer.from(match[2], 'base64') };
       }
-      if (!dataUrl || !String(dataUrl).startsWith('data:')) {
+      if (!loaded?.buffer?.length) {
         send(res, 404, { error: 'Media not found' });
         return;
       }
-      const m = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl));
-      if (!m) {
-        send(res, 404, { error: 'Invalid media' });
-        return;
-      }
-      const buf = Buffer.from(m[2], 'base64');
+      const buf = loaded.buffer;
+      const m = ['', loaded.contentType || 'application/octet-stream', ''];
       res.statusCode = 200;
       res.setHeader('Content-Type', m[1] || 'application/octet-stream');
       res.setHeader('Cache-Control', 'public, max-age=300');

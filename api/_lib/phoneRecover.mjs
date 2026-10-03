@@ -29,6 +29,15 @@ function keepText(value) {
   return text;
 }
 
+function keepImageRef(value) {
+  const text = String(value || '').trim();
+  if (!text || text.startsWith('data:') || text.startsWith('blob:') || text.length > 240) return '';
+  if (text.startsWith('img:') || text.startsWith('/api/images/') || text.startsWith('/api/media/')) {
+    return text;
+  }
+  return '';
+}
+
 export function stripPhotos(value) {
   if (typeof value === 'string') {
     const text = value.trim();
@@ -40,7 +49,24 @@ export function stripPhotos(value) {
   if (!value || typeof value !== 'object') return value;
   const out = {};
   for (const [key, item] of Object.entries(value)) {
-    if (SECRET_KEYS.has(key) || PHOTO_KEYS.has(key)) continue;
+    if (SECRET_KEYS.has(key)) continue;
+    if (key === 'customMedia' && Array.isArray(item)) {
+      const slots = item
+        .map((slot) => {
+          if (!slot || typeof slot !== 'object') return null;
+          const url = keepImageRef(slot.url);
+          if (!url) return null;
+          return stripPhotos({ ...slot, url });
+        })
+        .filter(Boolean);
+      if (slots.length) out[key] = slots;
+      continue;
+    }
+    if (PHOTO_KEYS.has(key)) {
+      const ref = keepImageRef(item);
+      if (ref) out[key] = ref;
+      continue;
+    }
     out[key] = stripPhotos(item);
   }
   return out;
@@ -253,11 +279,60 @@ export async function loadRecoveryDb() {
   }
 }
 
+export function bodyHasPrivateLicenses(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const hasKey = (entry) => entry && (entry.key || entry.licenseKey);
+  if (Array.isArray(body.vault) && body.vault.some(hasKey)) return true;
+  if (Array.isArray(body.licenses) && body.licenses.some(hasKey)) return true;
+  if (Array.isArray(body.revokedKeys) && body.revokedKeys.some((key) => String(key || '').trim())) {
+    return true;
+  }
+  const workspaces = body.store?.workspaces;
+  if (!workspaces || typeof workspaces !== 'object') return false;
+  return Object.values(workspaces).some(
+    (workspace) => Array.isArray(workspace?.licenses) && workspace.licenses.some(hasKey),
+  );
+}
+
+export function redactPortalDb(db) {
+  const next = db && typeof db === 'object' ? { ...db } : {};
+  next.vault = [];
+  next.images = {};
+  next.clients = [];
+  next.sessions = {};
+  next.revokedKeys = [];
+  next.store = {
+    ...(next.store && typeof next.store === 'object' ? next.store : {}),
+    workspaces: {},
+  };
+  return next;
+}
+
+function withWorkspaceLicenses(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch;
+  const workspaces = patch.store?.workspaces;
+  if (!workspaces || typeof workspaces !== 'object') return patch;
+  const extra = [];
+  for (const [id, workspace] of Object.entries(workspaces)) {
+    const licenses = Array.isArray(workspace?.licenses) ? workspace.licenses : [];
+    for (const license of licenses) takeLicense(extra, license, id);
+  }
+  if (!extra.length) return patch;
+  return {
+    ...patch,
+    vault: [...(Array.isArray(patch.vault) ? patch.vault : []), ...extra],
+  };
+}
+
+export function prepareLicensePatch(patch) {
+  return withWorkspaceLicenses(stripPhotos(patch || {}));
+}
+
 export async function mergeRecoveryPatch(patch) {
   const config = supabaseConfig();
   if (!config.url || !config.secretKey) return null;
   const current = (await loadRecoveryDb()) || emptyDb();
-  const next = mergeDatabases(current, patch || {});
+  const next = mergeDatabases(current, prepareLicensePatch(patch));
   next.images = {};
   next.updatedAt = new Date().toISOString();
   const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {

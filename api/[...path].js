@@ -384,16 +384,26 @@ export default async function handler(req, res) {
 
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
-      send(res, 200, db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      const { redactPortalDb } = await import('./_lib/phoneRecover.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(db)));
       return;
     }
 
     if (pathname === '/api/db' && req.method === 'PUT') {
       const body = await readBody(req);
+      const { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } = await import(
+        './_lib/phoneRecover.mjs'
+      );
+      const stored = await mergeRecoveryPatch(body);
+      if (bodyHasPrivateLicenses(body) && !stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
       const { db, sha } = await loadDb();
-      // Merge only — never replace whole lists with empties from a partial client sync
       const saved = await saveDb(mergeDatabases(db, body), sha);
-      send(res, 200, saved.db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(saved.db)));
       return;
     }
 
@@ -504,17 +514,20 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/vault' && req.method === 'GET') {
-      const { db } = await loadDb();
-      send(res, 200, db.vault || []);
+      send(res, 200, []);
       return;
     }
 
     if (pathname === '/api/vault' && req.method === 'PUT') {
       const body = await readBody(req);
-      const { db, sha } = await loadDb();
-      db.vault = Array.isArray(body) ? body : body.vault || db.vault;
-      await saveDb(db, sha);
-      send(res, 200, db.vault);
+      const incoming = Array.isArray(body) ? body : body.vault || [];
+      const { mergeRecoveryPatch } = await import('./_lib/phoneRecover.mjs');
+      const stored = await mergeRecoveryPatch({ vault: incoming, images: {} });
+      if (!stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
+      send(res, 200, []);
       return;
     }
 
