@@ -704,20 +704,16 @@ export default async function handler(req, res) {
         return;
       }
 
-      // The live OpenAI key lives in Firebase (lumo/secrets/chartScan), not a
-      // Vercel env var — this project only has env vars for resend/mt5, so
-      // env vars are kept purely as a fallback if Firebase is unreachable.
+      // Firebase used to store lumo/secrets/chartScan. While that database
+      // is off, use the key already saved on Vercel.
       let chartScanSecret = null;
       try {
         const { firebaseRead } = await import('./_lib/clientMerge.mjs');
         chartScanSecret = await withTimeout(firebaseRead('lumo/secrets/chartScan'));
       } catch {}
+      const { chartScanApiKey } = await import('./_lib/chartScanKey.mjs');
 
-      const CHART_SCAN_API_KEY =
-        chartScanSecret?.apiKey ||
-        process.env.CHART_SCAN_API_KEY ||
-        process.env.OPENAI_API_KEY ||
-        '';
+      const CHART_SCAN_API_KEY = chartScanApiKey(chartScanSecret);
       const CHART_SCAN_API_URL =
         chartScanSecret?.apiUrl ||
         process.env.CHART_SCAN_API_URL ||
@@ -798,13 +794,13 @@ export default async function handler(req, res) {
         const { firebaseRead } = await import('./_lib/clientMerge.mjs');
         chartScanSecret = await withTimeout(firebaseRead('lumo/secrets/chartScan'));
       } catch {}
-      const configured = Boolean(
-        chartScanSecret?.apiKey ||
-          process.env.CHART_SCAN_API_KEY ||
-          process.env.OPENAI_API_KEY,
-      );
+      const { chartScanApiKey, chartScanKeyWorks } = await import('./_lib/chartScanKey.mjs');
+      const scanKey = chartScanApiKey(chartScanSecret);
+      const auth = scanKey ? await chartScanKeyWorks(scanKey) : { ok: false, status: 0 };
+      const configured = Boolean(scanKey) && (auth.ok || auth.status === 0);
       send(res, 200, {
         configured,
+        auth: auth.ok,
         model: chartScanSecret?.model || process.env.CHART_SCAN_MODEL || 'gpt-4o',
         url:
           chartScanSecret?.apiUrl ||
@@ -812,7 +808,11 @@ export default async function handler(req, res) {
           'https://api.openai.com/v1/chat/completions',
         source: chartScanSecret?.apiKey ? 'firebase' : 'env',
         mt5Base: Boolean(process.env.MT5_API_BASE || process.env.mt5_api_base),
-        hint: configured ? 'Live AI scans enabled' : 'Demo mode — no chart scan key configured',
+        hint: configured
+          ? 'Live AI scans enabled'
+          : auth.status === 401
+            ? 'Chart scan key was rejected'
+            : 'Demo mode — no chart scan key configured',
       });
       return;
     }

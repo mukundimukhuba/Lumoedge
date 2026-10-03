@@ -643,10 +643,8 @@ export default async function handler(req, res) {
         return;
       }
 
-      const CHART_SCAN_API_KEY =
-        process.env.CHART_SCAN_API_KEY ||
-        process.env.OPENAI_API_KEY ||
-        '';
+      const { chartScanApiKey } = await import('./_lib/chartScanKey.mjs');
+      const CHART_SCAN_API_KEY = chartScanApiKey();
       const CHART_SCAN_API_URL =
         process.env.CHART_SCAN_API_URL ||
         'https://api.openai.com/v1/chat/completions';
@@ -721,9 +719,7 @@ export default async function handler(req, res) {
 
     if (pathname === '/api/scan/status' && req.method === 'GET') {
       send(res, 200, {
-        configured: Boolean(
-          process.env.CHART_SCAN_API_KEY || process.env.OPENAI_API_KEY,
-        ),
+        configured: Boolean((await import('./_lib/chartScanKey.mjs')).chartScanApiKey()),
         model: process.env.CHART_SCAN_MODEL || 'gpt-4o',
         url: process.env.CHART_SCAN_API_URL || 'https://api.openai.com/v1/chat/completions',
       });

@@ -10,6 +10,7 @@ import {
   resolveTradeableSymbol,
   tradeableSymbolCandidates,
 } from './mt5Bridge.mjs';
+import { chartScanApiKey } from './chartScanKey.mjs';
 import {
   buildScanResponse,
   deriveTakeProfitLadder,
@@ -378,7 +379,7 @@ async function loadChartScanConfig() {
     secret = null;
   }
   return {
-    apiKey: secret?.apiKey || process.env.CHART_SCAN_API_KEY || process.env.OPENAI_API_KEY || '',
+    apiKey: chartScanApiKey(secret),
     apiUrl: secret?.apiUrl || process.env.CHART_SCAN_API_URL || 'https://api.openai.com/v1/chat/completions',
     model: secret?.model || process.env.CHART_SCAN_MODEL || 'gpt-4o',
   };
