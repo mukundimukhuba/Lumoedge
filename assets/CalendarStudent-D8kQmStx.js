@@ -155,6 +155,7 @@ function CalendarStudentPage() {
     const res = await fetch(url, { cache: "no-store", headers: { Accept: "application/json" } });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || "Could not load calendar");
+    setError("");
     setData(body);
     const serverMs = Number(body.serverNowMs) || Date.parse(body.serverNow) || Date.now();
     setOffset(serverMs - Date.now());

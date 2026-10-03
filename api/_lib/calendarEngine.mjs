@@ -3,6 +3,7 @@ import { firebaseRead, firebaseWrite } from './clientMerge.mjs';
 import {
   findVaultEntry,
   findWorkspaceLicense,
+  keysMatch,
   normalizeLicenseKey,
 } from './licenseClaim.mjs';
 import { checkMt5Connect, sendMt5MarketOrder } from './mt5Bridge.mjs';
@@ -40,6 +41,93 @@ export const firebaseIo = {
   checkConnect: checkMt5Connect,
   sendOrder: sendMt5MarketOrder,
 };
+
+let privateLicenseCache = { at: 0, db: null };
+
+async function loadPrivateLicenseDb() {
+  const now = Date.now();
+  if (privateLicenseCache.db && now - privateLicenseCache.at < 30000) return privateLicenseCache.db;
+  try {
+    const { loadRecoveryDb } = await import('./phoneRecover.mjs');
+    const db = await loadRecoveryDb();
+    const next = db && typeof db === 'object' ? db : null;
+    privateLicenseCache = { at: now, db: next };
+    return next;
+  } catch {
+    return privateLicenseCache.db;
+  }
+}
+
+function sessionBot(records, email) {
+  const session = records?.sessions?.[normalizeEmail(email)];
+  return session?.bot && typeof session.bot === 'object' ? session.bot : null;
+}
+
+export function findStudentLicenseRecord(records, email, licenseKey) {
+  const normalizedEmail = normalizeEmail(email);
+  const key = normalizeLicenseKey(licenseKey);
+  if (!normalizedEmail || !key || !records) return null;
+  let entry = findVaultEntry(records.vault, key);
+  let ownerId = String(entry?.ownerAdminId || entry?.adminId || '').trim();
+  if (!entry) {
+    const hit = findWorkspaceLicense(records.store?.workspaces || {}, key);
+    if (hit) {
+      entry = hit.license;
+      ownerId = hit.ownerId || ownerId;
+    }
+  }
+  const bot = sessionBot(records, normalizedEmail);
+  if (!entry && bot && keysMatch(String(bot.licenseKey || ''), key)) {
+    entry = {
+      key: String(bot.licenseKey || '').trim(),
+      status: 'assigned',
+      assignedEmail: normalizedEmail,
+      eaId: String(bot.eaId || bot.id || '').trim(),
+      eaName: String(bot.displayName || bot.name || bot.eaName || '').trim(),
+      ownerAdminId: String(bot.ownerAdminId || '').trim(),
+    };
+    ownerId = entry.ownerAdminId;
+  }
+  if (entry && bot && keysMatch(String(bot.licenseKey || ''), key)) {
+    const eaId = String(entry.eaId || '').trim();
+    const eaName = String(entry.eaName || '').trim();
+    if (!eaId && !eaName) {
+      entry = {
+        ...entry,
+        eaId: String(bot.eaId || bot.id || '').trim(),
+        eaName: String(bot.displayName || bot.name || bot.eaName || '').trim(),
+      };
+    }
+  }
+  if (!entry) return null;
+  return { entry, ownerId };
+}
+
+export function acceptStudentLicense(entry, email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!entry || entry.status === 'deleted' || entry.revoked) {
+    return { ok: false, error: 'User does not have an active license' };
+  }
+  const status = String(entry.status || '').toLowerCase();
+  if (status === 'assigned') {
+    if (normalizeEmail(entry.assignedEmail) !== normalizedEmail) {
+      return { ok: false, error: 'License does not belong to this account' };
+    }
+  } else if (status === 'active') {
+    const issued = normalizeEmail(entry.clientEmail || entry.email);
+    if (!issued || issued !== normalizedEmail) {
+      return { ok: false, error: 'User does not have an active license' };
+    }
+  } else {
+    return { ok: false, error: 'User does not have an active license' };
+  }
+  const botId = String(entry.eaId || '').trim();
+  const botName = String(entry.eaName || entry.displayName || entry.name || '').trim();
+  if (!botId && !botName) {
+    return { ok: false, error: 'License does not belong to an EA/Bot' };
+  }
+  return { ok: true, botId: botId || botName, botName: botName || botId };
+}
 
 export function toList(value) {
   if (Array.isArray(value)) return value.filter(Boolean);
@@ -294,7 +382,11 @@ export function createCalendarEngine(io = firebaseIo) {
         createdAt: prev?.createdAt || row.createdAt || nowIso,
         updatedAt: nowIso,
       };
-      await writeRow(EVENTS_ROOT, event.id, event);
+      try {
+        await writeRow(EVENTS_ROOT, event.id, event);
+      } catch {
+        /* The old database can be off. The student calendar still shows this event. */
+      }
     }
     await io.write(NEWS_SYNC_ROOT, {
       at: nowIso,
@@ -651,9 +743,17 @@ export function createCalendarEngine(io = firebaseIo) {
     if (!normalizedEmail) return { ok: false, error: 'User is not authenticated' };
     if (!key) return { ok: false, error: 'User does not have an active license' };
 
-    const vault = toList(await io.read('lumo/vault'));
-    let entry = findVaultEntry(vault, key);
+    const privateDb = io.loadLicenseDb ? await io.loadLicenseDb() : await loadPrivateLicenseDb();
+    const firebaseVault = toList(await io.read('lumo/vault'));
+    let entry = findVaultEntry(firebaseVault, key);
     let ownerId = String(entry?.ownerAdminId || entry?.adminId || '').trim();
+    if (!entry && privateDb) {
+      const saved = findStudentLicenseRecord(privateDb, normalizedEmail, key);
+      if (saved) {
+        entry = saved.entry;
+        ownerId = saved.ownerId || ownerId;
+      }
+    }
 
     if (!entry && ownerId) {
       const workspace = await io.read(`lumo/store/workspaces/${encodeURIComponent(ownerId)}`);
@@ -673,30 +773,19 @@ export function createCalendarEngine(io = firebaseIo) {
       }
     }
 
-    if (!entry || entry.status === 'deleted' || entry.revoked) {
-      return { ok: false, error: 'User does not have an active license' };
-    }
-    const status = String(entry.status || '').toLowerCase();
-    if (status !== 'assigned' && status !== 'active') {
-      return { ok: false, error: 'User does not have an active license' };
-    }
-    if (status === 'assigned' && normalizeEmail(entry.assignedEmail) !== normalizedEmail) {
-      return { ok: false, error: 'License does not belong to this account' };
-    }
-    if (status !== 'assigned') {
-      return { ok: false, error: 'User does not have an active license' };
-    }
-    const botId = String(entry.eaId || '').trim();
-    const botName = String(entry.eaName || '').trim();
-    if (!botId && !botName) {
-      return { ok: false, error: 'License does not belong to an EA/Bot' };
-    }
+    const accepted = acceptStudentLicense(entry, normalizedEmail);
+    if (!accepted.ok) return accepted;
+    const botId = accepted.botId;
+    const botName = accepted.botName;
     return {
       ok: true,
       email: normalizedEmail,
       userId: normalizedEmail,
       licenseKey: key,
-      licenseId: String(entry.id || entry.key || key),
+      licenseId:
+        String(entry.id || '').trim() && !keysMatch(entry.id, key)
+          ? String(entry.id)
+          : emailFingerprint(normalizedEmail).slice(0, 16),
       license: entry,
       botId: botId || botName,
       botName: botName || botId,
@@ -727,7 +816,13 @@ export function createCalendarEngine(io = firebaseIo) {
   async function listStudentCalendar(email, licenseKey) {
     const license = await resolveStudentLicense(email, licenseKey);
     if (!license.ok) return license;
-    await syncUpcomingNews();
+    let syncedEvents = [];
+    try {
+      const synced = await syncUpcomingNews();
+      syncedEvents = toList(synced?.events);
+    } catch {
+      syncedEvents = [];
+    }
     await purgeOrphanSignalEvents();
     const nowMs = io.nowMs();
     const signals = [];
@@ -743,7 +838,8 @@ export function createCalendarEngine(io = firebaseIo) {
       signals.push(publicStudentSignal(persisted, execution, nowMs));
     }
     const signalEventIds = new Set(signals.map((row) => row.eventId).filter(Boolean));
-    const visibleEvents = (await listEvents())
+    const storedEvents = await listEvents();
+    const visibleEvents = (storedEvents.length ? storedEvents : syncedEvents)
       .map((event) => publicEvent(event, nowMs))
       .filter((event) => {
         const tracked = isTrackedNewsName(event.name) && isOfficialNewsEvent(event);
