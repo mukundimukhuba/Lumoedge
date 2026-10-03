@@ -22,6 +22,17 @@ import {
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
 import { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } from './phoneRecover.mjs';
+import {
+  approvePrivateMentor,
+  combineSubscriptions,
+  listPrivateAdmins,
+  listPrivateClients,
+  mergeAdminRosters,
+  patchPrivateClient,
+  savePrivateClient,
+  savePrivateMentor,
+  visibleClient,
+} from './supabaseRoster.mjs';
 import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleSpecialRoutes } from './specialRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
@@ -340,7 +351,8 @@ export async function handleApi(req, res, pathname) {
 
     if (pathname === '/api/clients' && req.method === 'GET') {
       const merged = await loadMergedClients(loadDb);
-      json(res, 200, merged);
+      const saved = await listPrivateClients();
+      json(res, 200, combineSubscriptions(merged, saved).map(visibleClient));
       return true;
     }
 
@@ -378,7 +390,12 @@ export async function handleApi(req, res, pathname) {
         await firebaseClearSessionDevice(email).catch(() => undefined);
       }
       if (!created) {
-        json(res, 503, { error: 'Could not save client to Firebase' });
+        json(res, 503, { error: 'Could not save subscription' });
+        return true;
+      }
+      const storedClient = await savePrivateClient(created);
+      if (!storedClient) {
+        json(res, 503, { error: 'Could not save subscription' });
         return true;
       }
       const { db, sha } = await loadDb();
@@ -393,7 +410,7 @@ export async function handleApi(req, res, pathname) {
           /* never block client create */
         }
       }
-      json(res, 201, created);
+      json(res, 201, visibleClient(storedClient));
       return true;
     }
 
@@ -410,31 +427,38 @@ export async function handleApi(req, res, pathname) {
           }
         : body;
       const fbUpdated = await firebasePatchClientById(id, patch);
-      if (!fbUpdated) {
-        json(res, 404, { error: 'Client not found in Firebase', id, table: 'lumo/clients' });
+      const storedClient = fbUpdated
+        ? await savePrivateClient(fbUpdated)
+        : await patchPrivateClient(id, patch);
+      if (!storedClient) {
+        json(res, fbUpdated ? 503 : 404, {
+          error: fbUpdated ? 'Could not save subscription' : 'Client not found',
+          id,
+        });
         return true;
       }
+      const approvedClient = storedClient;
       const { db, sha } = await loadDb();
-      db.clients = mergeClients(db.clients || [], [fbUpdated]);
-      mirrorClientToSuper(db, fbUpdated);
+      db.clients = mergeClients(db.clients || [], [approvedClient]);
+      mirrorClientToSuper(db, approvedClient);
       await saveDb(db, sha);
-      if (String(fbUpdated.status || '').toLowerCase() === 'approved') {
-        await firebaseClearSessionDevice(fbUpdated.email).catch(() => undefined);
+      if (String(approvedClient.status || '').toLowerCase() === 'approved') {
+        await firebaseClearSessionDevice(approvedClient.email).catch(() => undefined);
       }
-      if (String(fbUpdated.status || '').toLowerCase() === 'rejected') {
+      if (String(approvedClient.status || '').toLowerCase() === 'rejected') {
         await tryReverseCommission({
-          email: fbUpdated.email,
+          email: approvedClient.email,
           reason: 'Subscription cancelled or payment rejected',
           actorId: 'system:client-patch',
         });
-      } else if (fbUpdated.paymentVerified === true) {
+      } else if (approvedClient.paymentVerified === true) {
         await tryQualifyCommission({
-          email: fbUpdated.email,
+          email: approvedClient.email,
           source: 'payment',
           actorId: 'system:client-patch',
         });
       }
-      json(res, 200, fbUpdated);
+      json(res, 200, visibleClient(approvedClient));
       return true;
     }
 
@@ -443,7 +467,8 @@ export async function handleApi(req, res, pathname) {
       const fbAdmins = toArray(curAuth?.admins);
       const { db } = await loadDb();
       const localAdmins = toArray(db.auth?.admins);
-      json(res, 200, publicAdminList(mergeAdminsLive(fbAdmins, localAdmins)));
+      const savedAdmins = await listPrivateAdmins();
+      json(res, 200, publicAdminList(mergeAdminRosters(fbAdmins, localAdmins, savedAdmins)));
       return true;
     }
 
@@ -467,7 +492,7 @@ export async function handleApi(req, res, pathname) {
       let backupAdmins = [];
       try {
         const { db } = await loadDb();
-        backupAdmins = toArray(db.auth?.admins);
+        backupAdmins = mergeAdminRosters(toArray(db.auth?.admins), await listPrivateAdmins());
       } catch {
         backupAdmins = [];
       }
@@ -539,7 +564,10 @@ export async function handleApi(req, res, pathname) {
         return true;
       }
       const fbAdmins = toArray((await firebaseRead('lumo/auth'))?.admins);
-      const existingFb = fbAdmins.find((a) => String(a.email || '').toLowerCase() === email);
+      const savedAdmins = await listPrivateAdmins();
+      const existingFb = [...fbAdmins, ...savedAdmins].find(
+        (a) => String(a.email || '').toLowerCase() === email,
+      );
       if (existingFb) {
         json(res, 200, publicAdminRecord(existingFb));
         return true;
@@ -583,9 +611,10 @@ export async function handleApi(req, res, pathname) {
         orders: [],
         revokedKeys: [],
       };
-      const savedToFirebase = await firebaseRegisterMentor(entry, workspace);
-      if (!savedToFirebase) {
-        json(res, 503, { error: 'Could not save registration to cloud database' });
+      await firebaseRegisterMentor(entry, workspace).catch(() => false);
+      const savedMentor = await savePrivateMentor(entry, workspace);
+      if (!savedMentor) {
+        json(res, 503, { error: 'Could not save registration' });
         return true;
       }
       db.auth = db.auth || { admins: [], admin: null };
@@ -654,18 +683,19 @@ export async function handleApi(req, res, pathname) {
           'pending',
       ).toLowerCase();
       const fbUpdated = await firebasePatchAdminRole(id, role, fallback).catch(() => null);
-      if (!fbUpdated) {
-        console.warn('[api] mentor approve failed', { id, role, email: updated?.email });
+      const privateUpdated = await approvePrivateMentor(id, role, fbUpdated || fallback || updated);
+      if (!privateUpdated && !fbUpdated) {
         json(res, 502, { ok: false, error: 'approve_failed' });
         return true;
       }
-      let active = fbUpdated;
+      let active = privateUpdated || fbUpdated;
       if (priorRole === 'pending' && role === 'admin') {
         try {
           active =
-            (await startMentorActivityPeriod(fbUpdated.id || fbUpdated.email)) || fbUpdated;
+            (await startMentorActivityPeriod((privateUpdated || fbUpdated).id || (privateUpdated || fbUpdated).email)) ||
+            active;
         } catch {
-          active = fbUpdated;
+          active = privateUpdated || fbUpdated;
         }
         try {
           const { notifyMentorApproved } = await import('./email/index.mjs');
