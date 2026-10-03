@@ -171,6 +171,20 @@ export async function handleApi(req, res, pathname) {
       return true;
     }
 
+    if (pathname === '/api/recover/phone' && req.method === 'POST') {
+      const { acceptPhoneSnapshot } = await import('./phoneRecover.mjs');
+      const body = await readBody(req);
+      const result = await acceptPhoneSnapshot(body);
+      json(res, result.ok ? 200 : 503, result);
+      return true;
+    }
+
+    if (pathname === '/api/recover/status' && req.method === 'GET') {
+      const { recoveryStatus } = await import('./phoneRecover.mjs');
+      json(res, 200, await recoveryStatus());
+      return true;
+    }
+
     const specialHandled = await handleSpecialRoutes(req, res, {
       json,
       pathname,

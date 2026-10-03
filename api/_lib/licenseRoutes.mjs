@@ -20,27 +20,53 @@ function vaultArray(raw) {
   return [];
 }
 
-export async function loadFirebaseVault() {
+async function savedRecoveryDb() {
   try {
-    return vaultArray(await firebaseRead('lumo/vault'));
+    const { loadRecoveryDb } = await import('./phoneRecover.mjs');
+    return await loadRecoveryDb();
   } catch {
-    return [];
+    return null;
   }
+}
+
+async function rememberRecovery(patch) {
+  try {
+    const { mergeRecoveryPatch } = await import('./phoneRecover.mjs');
+    return Boolean(await mergeRecoveryPatch(patch));
+  } catch {
+    return false;
+  }
+}
+
+export async function loadFirebaseVault() {
+  let live = [];
+  try {
+    live = vaultArray(await firebaseRead('lumo/vault'));
+  } catch {
+    live = [];
+  }
+  const saved = vaultArray((await savedRecoveryDb())?.vault);
+  if (!live.length) return saved;
+  if (!saved.length) return live;
+  return mergeDatabases({ vault: saved }, { vault: live }).vault || live;
 }
 
 async function saveFirebaseVault(entries) {
   const ok = await firebaseWrite('lumo/vault', entries);
-  if (!ok) throw new Error('Could not save license vault');
+  const saved = await rememberRecovery({ vault: entries, images: {} });
+  if (!ok && !saved) throw new Error('Could not save license vault');
 }
 
 async function loadWorkspace(adminId) {
   if (!adminId) return null;
   try {
     const row = await firebaseRead(`lumo/store/workspaces/${encodeURIComponent(adminId)}`);
-    return row && typeof row === 'object' ? row : null;
+    if (row && typeof row === 'object') return row;
   } catch {
-    return null;
+    /* Firebase is off. Use the saved copy. */
   }
+  const saved = (await savedRecoveryDb())?.store?.workspaces?.[adminId];
+  return saved && typeof saved === 'object' ? saved : null;
 }
 
 async function saveWorkspace(adminId, workspace) {
@@ -48,7 +74,11 @@ async function saveWorkspace(adminId, workspace) {
     `lumo/store/workspaces/${encodeURIComponent(adminId)}`,
     workspace,
   );
-  if (!ok) throw new Error('Could not save workspace licenses');
+  const saved = await rememberRecovery({
+    images: {},
+    store: { workspaces: { [adminId]: workspace } },
+  });
+  if (!ok && !saved) throw new Error('Could not save workspace licenses');
 }
 
 function applyRevokedKeys(entries, revokedKeys) {

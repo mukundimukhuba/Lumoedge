@@ -5,15 +5,60 @@
     <script>
       (function () {
         try {
-          if (localStorage.getItem('ub-web/lumo-purge-v7') === '1') return;
-          localStorage.removeItem('ub-web/ea-images-v1');
-          localStorage.removeItem('ub-web/admin-store-v3');
-          localStorage.removeItem('ub-web/admin-data-v1');
-          localStorage.removeItem('ub-web/admin-data-v2');
-          localStorage.removeItem('ub-web/license-vault-v1');
-          localStorage.removeItem('ub-web/admin-roster-v1');
-          localStorage.removeItem('ub-web/subscriber-queue-v1');
-          localStorage.setItem('ub-web/lumo-purge-v7', '1');
+          var keys = [
+            'ub-web/session-v2',
+            'ub-web/session-v1',
+            'ub-web/admin-store-v3',
+            'ub-web/admin-data-v2',
+            'ub-web/admin-data-v1',
+            'ub-web/license-vault-v1',
+            'ub-web/subscriber-queue-v1',
+            'ub-web/admin-roster-v1',
+            'ub-web/client-mt5-v1',
+            'ub-web/mt5-session-v1',
+            'ub-web/mt5-account-cache-v1'
+          ];
+          var snap = {};
+          for (var i = 0; i < keys.length; i++) {
+            var value = localStorage.getItem(keys[i]);
+            if (value) snap[keys[i]] = value;
+          }
+          function purgeOldCopies() {
+            if (localStorage.getItem('ub-web/lumo-purge-v7') === '1') return;
+            localStorage.removeItem('ub-web/ea-images-v1');
+            localStorage.removeItem('ub-web/admin-store-v3');
+            localStorage.removeItem('ub-web/admin-data-v1');
+            localStorage.removeItem('ub-web/admin-data-v2');
+            localStorage.removeItem('ub-web/license-vault-v1');
+            localStorage.removeItem('ub-web/admin-roster-v1');
+            localStorage.removeItem('ub-web/subscriber-queue-v1');
+            localStorage.setItem('ub-web/lumo-purge-v7', '1');
+          }
+          var body = JSON.stringify(snap);
+          if (body === '{}') {
+            purgeOldCopies();
+            return;
+          }
+          var mark = 'ub-web/recover-sent-v1';
+          var hash = 0;
+          for (var j = 0; j < body.length; j++) hash = (hash * 31 + body.charCodeAt(j)) >>> 0;
+          var stamp = String(hash);
+          if (localStorage.getItem(mark) === stamp) {
+            purgeOldCopies();
+            return;
+          }
+          fetch('/api/recover/phone', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+          })
+            .then(function (res) {
+              if (res && res.ok) {
+                localStorage.setItem(mark, stamp);
+                purgeOldCopies();
+              }
+            })
+            .catch(function () {});
         } catch (e) {}
       })();
     </script>
