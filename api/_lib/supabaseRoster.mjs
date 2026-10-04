@@ -104,6 +104,36 @@ export async function listPrivateAdmins() {
   return Array.isArray(db?.auth?.admins) ? db.auth.admins : [];
 }
 
+function privateMap(db, key) {
+  const value = db?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+export async function listPrivateResets() {
+  const db = await privateDb();
+  return privateMap(db, 'passwordResets');
+}
+
+export async function savePrivateReset(id, record) {
+  const key = String(id || '').trim();
+  if (!key || !record || typeof record !== 'object') return false;
+  const saved = await mergeRecoveryPatch({ passwordResets: { [key]: record } });
+  return Boolean(saved);
+}
+
+export async function listPrivateResetLimit(id) {
+  const db = await privateDb();
+  const bucket = privateMap(db, 'passwordResetLimits')[String(id || '')];
+  return bucket && typeof bucket === 'object' ? bucket : { requests: [] };
+}
+
+export async function savePrivateResetLimit(id, bucket) {
+  const key = String(id || '').trim();
+  if (!key) return false;
+  const saved = await mergeRecoveryPatch({ passwordResetLimits: { [key]: bucket || { requests: [] } } });
+  return Boolean(saved);
+}
+
 export async function savePrivateClient(entry) {
   const email = emailOf(entry?.email);
   if (!email) return null;

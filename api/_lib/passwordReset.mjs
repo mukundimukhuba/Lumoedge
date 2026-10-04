@@ -1,6 +1,15 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { firebaseRead, firebaseWrite, findAdminByEmail, passwordsMatch, hashPassword } from './clientMerge.mjs';
+import { firebaseRead, firebaseWrite, findAdminByEmail, passwordsMatch, hashPassword, mergeAdminsLive } from './clientMerge.mjs';
 import { isValidEmail } from './email/send.mjs';
+import { supabaseConfig } from './supabase.mjs';
+import {
+  listPrivateAdmins,
+  listPrivateResetLimit,
+  listPrivateResets,
+  savePrivateMentor,
+  savePrivateReset,
+  savePrivateResetLimit,
+} from './supabaseRoster.mjs';
 
 export const RESET_TTL_MS = 15 * 60 * 1000;
 export const RESET_REQUEST_WINDOW_MS = 60 * 60 * 1000;
@@ -31,6 +40,69 @@ function toArray(value) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') return Object.values(value);
   return [];
+}
+
+function asMap(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+async function accountsOf(opts) {
+  if (opts.accounts) return opts.accounts;
+  if (!supabaseConfig().secretKey) return null;
+  return {
+    async list() {
+      return listPrivateAdmins();
+    },
+    async save(admin) {
+      return savePrivateMentor(admin);
+    },
+    async listResets() {
+      return listPrivateResets();
+    },
+    async saveReset(id, row) {
+      return savePrivateReset(id, row);
+    },
+    async listLimit(id) {
+      return listPrivateResetLimit(id);
+    },
+    async saveLimit(id, bucket) {
+      return savePrivateResetLimit(id, bucket);
+    },
+  };
+}
+
+async function durableAdmins(io, accounts) {
+  const curAuth = (await io.read('lumo/auth')) || { admins: [] };
+  let saved = [];
+  if (accounts?.list) {
+    try {
+      saved = toArray(await accounts.list());
+    } catch {
+      saved = [];
+    }
+  }
+  return mergeAdminsLive(toArray(curAuth.admins), saved);
+}
+
+async function readResetMap(io, accounts) {
+  const fromIo = asMap(await io.read('lumo/passwordResets'));
+  let fromPrivate = {};
+  if (accounts?.listResets) {
+    try {
+      fromPrivate = asMap(await accounts.listResets());
+    } catch {
+      fromPrivate = {};
+    }
+  }
+  return { ...fromIo, ...fromPrivate };
+}
+
+async function writeIo(io, path, value) {
+  try {
+    return Boolean(await io.write(path, value));
+  } catch {
+    return false;
+  }
 }
 
 export function generateResetCode() {
@@ -64,24 +136,41 @@ export async function requestPasswordReset(email, opts = {}) {
   const notify = opts.notify;
   const normalized = isValidEmail(email);
   if (!normalized) return GENERIC_OK;
+  const accounts = await accountsOf(opts);
+  const limitId = normalized.replace(/[^a-z0-9]/g, '_');
 
-  const curAuth = (await io.read('lumo/auth')) || { admins: [] };
-  const hit = findAdminByEmail(curAuth.admins, normalized);
-  const bucket = (await io.read(`lumo/passwordResetLimits/${normalized.replace(/[^a-z0-9]/g, '_')}`)) || {
-    requests: [],
-  };
-  const requests = toArray(bucket.requests).filter((row) => now - Number(row.at || 0) < RESET_REQUEST_WINDOW_MS);
+  const admins = await durableAdmins(io, accounts);
+  const hit = findAdminByEmail(admins, normalized);
+  const ioBucket = (await io.read(`lumo/passwordResetLimits/${limitId}`)) || { requests: [] };
+  let privateBucket = { requests: [] };
+  if (accounts?.listLimit) {
+    try {
+      privateBucket = (await accounts.listLimit(limitId)) || { requests: [] };
+    } catch {
+      privateBucket = { requests: [] };
+    }
+  }
+  const requests = [...toArray(ioBucket.requests), ...toArray(privateBucket.requests)].filter(
+    (row) => now - Number(row.at || 0) < RESET_REQUEST_WINDOW_MS,
+  );
   if (recentCount(requests, now, RESET_REQUEST_WINDOW_MS) >= RESET_MAX_PER_EMAIL) {
     return GENERIC_OK;
   }
   requests.push({ at: now });
-  await io.write(`lumo/passwordResetLimits/${normalized.replace(/[^a-z0-9]/g, '_')}`, { requests });
+  const nextBucket = { requests };
+  await writeIo(io, `lumo/passwordResetLimits/${limitId}`, nextBucket);
+  if (accounts?.saveLimit) {
+    try {
+      await accounts.saveLimit(limitId, nextBucket);
+    } catch {
+      /* rate-limit storage must not block a reset */
+    }
+  }
 
   if (!hit) return GENERIC_OK;
 
   const code = opts.code || generateResetCode();
   const requestId = `rst-${now}-${randomBytes(4).toString('hex')}`;
-  const all = { ...((await io.read('lumo/passwordResets')) || {}) };
   const record = {
     email: normalized,
     userId: String(hit.id || ''),
@@ -90,9 +179,18 @@ export async function requestPasswordReset(email, opts = {}) {
     usedAt: '',
     createdAt: new Date(now).toISOString(),
   };
-  all[requestId] = record;
-  await io.write('lumo/passwordResets', all);
-  if (typeof notify === 'function') {
+  const all = { ...(await readResetMap(io, accounts)), [requestId]: record };
+  const ioOk = await writeIo(io, 'lumo/passwordResets', all);
+  let privateOk = true;
+  if (accounts?.saveReset) {
+    try {
+      privateOk = Boolean(await accounts.saveReset(requestId, record));
+    } catch {
+      privateOk = false;
+    }
+  }
+  const durable = accounts ? privateOk : ioOk;
+  if (durable && typeof notify === 'function') {
     try {
       await notify({
         email: normalized,
@@ -122,7 +220,8 @@ export async function completePasswordReset({ email, code, password, confirm }, 
   if (nextPassword.length < 8) return { ok: false, error: 'password_too_short' };
   if (nextPassword !== confirmPassword) return { ok: false, error: 'password_mismatch' };
 
-  const all = (await io.read('lumo/passwordResets')) || {};
+  const accounts = await accountsOf(opts);
+  const all = await readResetMap(io, accounts);
   const entries = Object.entries(all || {}).filter(([, row]) => row && typeof row === 'object');
   const match = entries.find(
     ([, row]) =>
@@ -134,8 +233,7 @@ export async function completePasswordReset({ email, code, password, confirm }, 
   if (!match) return { ok: false, error: 'invalid_or_expired_code' };
 
   const [requestId, row] = match;
-  const curAuth = (await io.read('lumo/auth')) || { admins: [] };
-  const admins = toArray(curAuth.admins);
+  const admins = await durableAdmins(io, accounts);
   let hit = null;
   const next = admins.map((admin) => {
     if (String(admin?.email || '').trim().toLowerCase() !== normalized) return admin;
@@ -148,9 +246,28 @@ export async function completePasswordReset({ email, code, password, confirm }, 
     return hit;
   });
   if (!hit) return { ok: false, error: 'invalid_or_expired_code' };
-  await io.write('lumo/auth', { admins: next, admin: null });
-  const nextResets = { ...all, [requestId]: { ...row, usedAt: new Date(now).toISOString() } };
-  await io.write('lumo/passwordResets', nextResets);
+  let privateOk = false;
+  if (accounts?.save) {
+    try {
+      privateOk = Boolean(await accounts.save(hit));
+    } catch {
+      privateOk = false;
+    }
+  }
+  const ioOk = await writeIo(io, 'lumo/auth', { admins: next, admin: null });
+  if (accounts ? !privateOk : !ioOk) {
+    return { ok: false, error: 'save_failed' };
+  }
+  const used = { ...row, usedAt: new Date(now).toISOString() };
+  const nextResets = { ...all, [requestId]: used };
+  await writeIo(io, 'lumo/passwordResets', nextResets);
+  if (accounts?.saveReset) {
+    try {
+      await accounts.saveReset(requestId, used);
+    } catch {
+      /* the password is already stored; a reused code still has to match usedAt */
+    }
+  }
   try {
     await io.write(`lumo/audit/passwordResets/${requestId}`, {
       email: normalized,

@@ -384,6 +384,8 @@ export function publicDbSnapshot(db) {
       admin: next.auth.admin ? publicAdminRecord(next.auth.admin) : null,
     };
   }
+  delete next.passwordResets;
+  delete next.passwordResetLimits;
   return next;
 }
 
@@ -442,10 +444,9 @@ export function loginResultFor(hit, email) {
 }
 
 /**
- * Verify mentor email+password against Firebase, then a durable backup roster.
- * If Firebase is missing the password (client roster sync wiped it), restore
- * the backup password and let the mentor in. Never overwrite a non-empty
- * Firebase password from backup — Super Admin reset must keep winning.
+ * Verify mentor email+password against Firebase, then the private roster.
+ * A later password reset wins over an older hash. An empty Firebase password
+ * can still be healed from the backup roster.
  */
 export async function verifyMentorLogin(
   email,
@@ -469,47 +470,20 @@ export async function verifyMentorLogin(
   }
   const liveAdmins = swept.admins;
   const hit = findAdminByEmail(liveAdmins, normalized);
-  if (hit && passwordsMatch(hit.password, pass)) {
-    if (!isHashedPassword(hit.password)) {
-      const upgraded = liveAdmins.map((row) =>
-        String(row?.email || '').toLowerCase() === normalized
-          ? { ...row, password: hashPassword(pass) }
-          : row,
-      );
-      await io.write('lumo/auth', { admins: upgraded, admin: null }).catch(() => false);
-    }
-    return loginResultFor(hit, normalized);
-  }
-
   const backupHit = findAdminByEmail(backupAdmins, normalized);
-  const livePass = String(hit?.password || '');
-  if (!livePass && backupHit && passwordsMatch(backupHit.password, pass)) {
-    const healed = {
-      ...hit,
-      ...backupHit,
-      email: normalized,
-      password: isHashedPassword(backupHit.password) ? backupHit.password : hashPassword(pass),
-      id: hit?.id || backupHit.id,
-      role: pickAdminRole(hit?.role, backupHit.role),
-    };
-    const next = mergeAdminsLive(liveAdmins, [healed]);
-    await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
+  const chosen =
+    hit && backupHit ? mergeAdminsLive([hit], [backupHit])[0] : hit || backupHit || null;
+  if (chosen && passwordsMatch(chosen.password, pass)) {
+    const durable = isHashedPassword(chosen.password) ? chosen.password : hashPassword(pass);
+    const healed = { ...chosen, email: normalized, password: durable };
+    if (!hit || String(hit.password || '') !== durable) {
+      const next = mergeAdminsLive(liveAdmins, [healed]);
+      await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
+    }
     return loginResultFor(healed, normalized);
   }
 
-  if (!hit && backupHit && passwordsMatch(backupHit.password, pass)) {
-    const next = mergeAdminsLive(liveAdmins, [
-      {
-        ...backupHit,
-        email: normalized,
-        password: isHashedPassword(backupHit.password) ? backupHit.password : hashPassword(pass),
-      },
-    ]);
-    await io.write('lumo/auth', { admins: next, admin: null }).catch(() => false);
-    return loginResultFor(backupHit, normalized);
-  }
-
-  if (hit && !livePass) {
+  if (chosen && !String(chosen.password || '')) {
     return { ok: false, error: 'password_reset_required' };
   }
   return { ok: false, error: 'invalid_credentials' };
@@ -524,6 +498,33 @@ export function pickAdminRole(a, b) {
 /** Never demote approved mentors — admin always beats pending. */
 export function pickAdminRoleLive(liveRole, backupRole) {
   return pickAdminRole(liveRole, backupRole);
+}
+
+export function resetStamp(admin) {
+  const stamp = Date.parse(admin?.passwordResetAt || '');
+  return Number.isFinite(stamp) ? stamp : 0;
+}
+
+/** Keep a stored password unless the incoming row was reset later. */
+export function choosePassword(prev, incoming) {
+  const prevPass = String(prev?.password || '');
+  const nextPass = String(incoming?.password || '');
+  if (!nextPass) return prevPass;
+  if (!prevPass) return nextPass;
+  if (resetStamp(incoming) > resetStamp(prev)) return nextPass;
+  return prevPass;
+}
+
+export function keepNewerPassword(prev, incoming, merged) {
+  merged.password = choosePassword(prev, incoming);
+  if (resetStamp(incoming) > resetStamp(prev)) {
+    if (incoming?.passwordResetAt) merged.passwordResetAt = incoming.passwordResetAt;
+    if (incoming?.passwordResetBy) merged.passwordResetBy = incoming.passwordResetBy;
+  } else {
+    if (prev?.passwordResetAt) merged.passwordResetAt = prev.passwordResetAt;
+    if (prev?.passwordResetBy) merged.passwordResetBy = prev.passwordResetBy;
+  }
+  return merged;
 }
 
 export function mergeAdminsLive(live, backup) {
@@ -549,15 +550,13 @@ export function mergeAdminsLive(live, backup) {
     merged.role = pickAdminRole(prev.role, item.role);
     // Keep Firebase id so approve-by-id keeps matching
     if (prev.id) merged.id = prev.id;
-    const livePass = String(prev.password || '');
-    const backupPass = String(item.password || '');
-    if (livePass || backupPass) merged.password = livePass || backupPass;
     for (const [k, v] of Object.entries(prev)) {
       const nextVal = item[k];
       if ((nextVal === '' || nextVal == null) && v !== '' && v != null) {
         merged[k] = v;
       }
     }
+    keepNewerPassword(prev, item, merged);
     byEmail.set(email, merged);
   }
   return [...byEmail.values()];

@@ -301,6 +301,8 @@ export function redactPortalDb(db) {
   next.clients = [];
   next.sessions = {};
   next.revokedKeys = [];
+  delete next.passwordResets;
+  delete next.passwordResetLimits;
   next.store = {
     ...(next.store && typeof next.store === 'object' ? next.store : {}),
     workspaces: {},

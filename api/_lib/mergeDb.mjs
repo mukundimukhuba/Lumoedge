@@ -1,4 +1,4 @@
-import { mergeClients, pickAdminRole } from './clientMerge.mjs';
+import { keepNewerPassword, mergeClients, pickAdminRole } from './clientMerge.mjs';
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -83,6 +83,13 @@ function mergeWorkspaces(existing = {}, incoming = {}) {
   return out;
 }
 
+function mergeNamedMaps(current, incoming, incomingPresent) {
+  const base = current && typeof current === 'object' && !Array.isArray(current) ? { ...current } : {};
+  if (!incomingPresent) return base;
+  const next = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming : {};
+  return { ...base, ...next };
+}
+
 function mergeAdmins(current, incoming) {
   const byEmail = new Map();
   for (const item of [...toArray(current), ...toArray(incoming)]) {
@@ -103,6 +110,7 @@ function mergeAdmins(current, incoming) {
         merged[k] = v;
       }
     }
+    keepNewerPassword(prev, item, merged);
     byEmail.set(email, merged);
   }
   return [...byEmail.values()];
@@ -128,6 +136,24 @@ export function mergeDatabases(base, patch) {
     sessions: { ...(a.sessions || {}), ...(b.sessions || {}) },
     images: { ...(a.images || {}), ...(b.images || {}) },
     revokedKeys: [...new Set([...(a.revokedKeys || []), ...(b.revokedKeys || [])])],
+    ...(a.passwordResets || Object.prototype.hasOwnProperty.call(b, 'passwordResets')
+      ? {
+          passwordResets: mergeNamedMaps(
+            a.passwordResets,
+            b.passwordResets,
+            Object.prototype.hasOwnProperty.call(b, 'passwordResets'),
+          ),
+        }
+      : {}),
+    ...(a.passwordResetLimits || Object.prototype.hasOwnProperty.call(b, 'passwordResetLimits')
+      ? {
+          passwordResetLimits: mergeNamedMaps(
+            a.passwordResetLimits,
+            b.passwordResetLimits,
+            Object.prototype.hasOwnProperty.call(b, 'passwordResetLimits'),
+          ),
+        }
+      : {}),
     scanAdmin: {
       ...(a.scanAdmin || {}),
       ...(b.scanAdmin || {}),

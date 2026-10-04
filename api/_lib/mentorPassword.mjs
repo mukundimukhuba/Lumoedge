@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { requireSuper, SUPER_LOGIN, verifyAdminSession } from './adminSession.mjs';
 import { firebaseRead, firebaseWrite, hashPassword, publicAdminRecord } from './clientMerge.mjs';
+import { savePrivateMentor } from './supabaseRoster.mjs';
 
 const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -66,8 +67,20 @@ export async function resetMentorPassword(idOrEmail, opts = {}) {
   if (!applied.hit) return { ok: false, error: 'not_found' };
   if (isProtectedSuperAdmin(applied.hit)) return { ok: false, error: 'protected_super' };
 
-  const authOk = await io.write('lumo/auth', { admins: applied.admins, admin: null });
-  if (!authOk) return { ok: false, error: 'write_failed' };
+  let authOk = false;
+  try {
+    authOk = Boolean(await io.write('lumo/auth', { admins: applied.admins, admin: null }));
+  } catch {
+    authOk = false;
+  }
+  let privateOk = false;
+  const savePrivate = opts.savePrivate || savePrivateMentor;
+  try {
+    privateOk = Boolean(await savePrivate(applied.hit));
+  } catch {
+    privateOk = false;
+  }
+  if (!authOk && !privateOk) return { ok: false, error: 'write_failed' };
   try {
     await io.write('lumo/updatedAt', resetAt);
   } catch {

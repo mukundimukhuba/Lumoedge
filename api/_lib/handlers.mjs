@@ -263,7 +263,8 @@ export async function handleApi(req, res, pathname) {
         password: body.password || body.newPassword,
         confirm: body.confirm || body.confirmPassword,
       });
-      json(res, result.ok ? 200 : 400, result);
+      const status = result.ok ? 200 : result.error === 'save_failed' ? 503 : 400;
+      json(res, status, result);
       return true;
     }
 
