@@ -246,23 +246,42 @@ export async function handleApi(req, res, pathname) {
 
     if (pathname === '/api/auth/forgot' && req.method === 'POST') {
       const body = await readBody(req);
+      let extraAdmins = [];
+      try {
+        const { db } = await loadDb();
+        extraAdmins = toArray(db.auth?.admins);
+      } catch {
+        extraAdmins = [];
+      }
       const { notifyPasswordReset } = await import('./email/index.mjs');
       const result = await requestPasswordReset(body.email, {
+        extraAdmins,
         notify: (payload) =>
           notifyPasswordReset({ firebaseRead, firebaseWrite, firebasePush: null }, payload),
       });
-      json(res, 200, result);
+      const status = result.ok ? 200 : result.error === 'send_failed' ? 503 : 400;
+      json(res, status, result);
       return true;
     }
 
     if (pathname === '/api/auth/reset' && req.method === 'POST') {
       const body = await readBody(req);
-      const result = await completePasswordReset({
-        email: body.email,
-        code: body.code || body.resetCode,
-        password: body.password || body.newPassword,
-        confirm: body.confirm || body.confirmPassword,
-      });
+      let extraAdmins = [];
+      try {
+        const { db } = await loadDb();
+        extraAdmins = toArray(db.auth?.admins);
+      } catch {
+        extraAdmins = [];
+      }
+      const result = await completePasswordReset(
+        {
+          email: body.email,
+          code: body.code || body.resetCode,
+          password: body.password || body.newPassword,
+          confirm: body.confirm || body.confirmPassword,
+        },
+        { extraAdmins },
+      );
       const status = result.ok ? 200 : result.error === 'save_failed' ? 503 : 400;
       json(res, status, result);
       return true;

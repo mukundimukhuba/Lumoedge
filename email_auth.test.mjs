@@ -110,7 +110,8 @@ test('password reset codes are hashed, single-use, and expire', async () => {
   assert.equal(resetCodesMatch(hashResetCode('111111'), '111111'), true);
 
   const reusedUnknown = await requestPasswordReset('nobody@example.com', { io, now: 2_000 });
-  assert.equal(reusedUnknown.message.includes('If that email is registered'), true);
+  assert.equal(reusedUnknown.ok, false);
+  assert.equal(reusedUnknown.error, 'not_registered');
 
   const expired = await completePasswordReset(
     { email: 'mentor@example.com', code: '111111', password: 'new-password', confirm: 'new-password' },

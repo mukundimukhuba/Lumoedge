@@ -227,6 +227,83 @@ test('super admin reset keeps the new password when Firebase write fails', async
   assert.equal(result.admin.password, undefined);
 });
 
+test('a registered mentor with a cleared password is emailed a code', async () => {
+  const sent = [];
+  const accounts = memoryAccounts([
+    { id: 'LM-9', email: 'mentor@example.com', role: 'admin', password: '', fullName: 'Mentor' },
+  ]);
+  const io = {
+    async read() {
+      return null;
+    },
+    async write() {
+      return false;
+    },
+  };
+  const missing = await requestPasswordReset('nobody@example.com', {
+    io,
+    accounts,
+    now: 80_000,
+    notify: async () => sent.push('no'),
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.error, 'not_registered');
+  assert.equal(sent.length, 0);
+
+  const sentCode = await requestPasswordReset('mentor@example.com', {
+    io,
+    accounts,
+    extraAdmins: [],
+    now: 81_000,
+    code: '555555',
+    notify: async (payload) => {
+      sent.push(payload.resetCode);
+      return { ok: true };
+    },
+  });
+  assert.equal(sentCode.ok, true);
+  assert.deepEqual(sent, ['555555']);
+
+  const failedSend = await requestPasswordReset('mentor@example.com', {
+    io,
+    accounts,
+    now: 82_000,
+    code: '666666',
+    notify: async () => ({ ok: false, error: 'smtp down' }),
+  });
+  assert.equal(failedSend.ok, false);
+  assert.equal(failedSend.error, 'send_failed');
+});
+
+test('the new password is stored for a mentor whose old password was empty', async () => {
+  const accounts = memoryAccounts([
+    { id: 'LM-9', email: 'mentor@example.com', role: 'admin', password: '', fullName: 'Mentor' },
+  ]);
+  const io = {
+    async read() {
+      return null;
+    },
+    async write() {
+      return false;
+    },
+  };
+  await requestPasswordReset('mentor@example.com', {
+    io,
+    accounts,
+    now: 90_000,
+    code: '777777',
+    notify: async () => ({ ok: true }),
+  });
+  const done = await completePasswordReset(
+    { email: 'mentor@example.com', code: '777777', password: 'stored-pass', confirm: 'stored-pass' },
+    { io, accounts, now: 91_000 },
+  );
+  assert.equal(done.ok, true);
+  assert.equal(passwordsMatch(accounts.state.admins[0].password, 'stored-pass'), true);
+  const login = await verifyMentorLogin('mentor@example.com', 'stored-pass', accounts.state.admins, io);
+  assert.equal(login.ok, true);
+});
+
 test('public database responses omit reset codes', () => {
   const view = publicDbSnapshot({
     auth: { admins: [{ email: 'mentor@example.com', password: 'sha256$x$y', role: 'admin' }], admin: null },
