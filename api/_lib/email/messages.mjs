@@ -126,6 +126,31 @@ export function licenseKeyEmail({
   };
 }
 
+export function subscriptionApprovedEmail(client = {}) {
+  const firstName = firstNameFrom(client);
+  const login = APP_HOME_URL;
+  const bodyHtml = [
+    paragraph(`Hi ${firstName},`),
+    paragraph('Your Lumo Edge subscription has been approved.'),
+    paragraph('You can now sign in and use Lumo Edge.'),
+    paragraph(`Open Lumo Edge: ${login}`),
+    paragraph('Thank you for choosing Lumo Edge.'),
+    paragraph('Lumo Edge Team'),
+  ].join('');
+  const html = renderLumoEmail({
+    title: 'Subscription approved',
+    preheader: 'Your Lumo Edge subscription has been approved.',
+    bodyHtml,
+    ctaLabel: 'OPEN LUMO EDGE',
+    ctaUrl: login,
+  });
+  return {
+    subject: 'Your Lumo Edge Subscription Is Approved',
+    html,
+    text: htmlToPlainText(html),
+  };
+}
+
 export function passwordResetEmail({ firstName, resetCode, name, fullName } = {}) {
   const who = firstNameFrom({ firstName, name, fullName });
   const code = String(resetCode || '').trim();

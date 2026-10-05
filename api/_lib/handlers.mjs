@@ -73,6 +73,15 @@ function toArray(value) {
   return [];
 }
 
+function notifyApprovedSubscription(client) {
+  if (String(client?.status || '').toLowerCase() !== 'approved') return;
+  void import('./email/index.mjs')
+    .then(({ notifySubscriptionApproved }) =>
+      notifySubscriptionApproved({ firebaseRead, firebaseWrite, firebasePush: null }, client),
+    )
+    .catch(() => undefined);
+}
+
 function json(res, status, data) {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
@@ -418,6 +427,9 @@ export async function handleApi(req, res, pathname) {
         json(res, 503, { error: 'Could not save subscription' });
         return true;
       }
+      if (String(storedClient.status || '').toLowerCase() === 'approved') {
+        notifyApprovedSubscription(storedClient);
+      }
       const { db, sha } = await loadDb();
       db.clients = mergeClients(db.clients || [], [created]);
       mirrorClientToSuper(db, created);
@@ -464,6 +476,7 @@ export async function handleApi(req, res, pathname) {
       await saveDb(db, sha);
       if (String(approvedClient.status || '').toLowerCase() === 'approved') {
         await firebaseClearSessionDevice(approvedClient.email).catch(() => undefined);
+        if (approving) notifyApprovedSubscription(approvedClient);
       }
       if (String(approvedClient.status || '').toLowerCase() === 'rejected') {
         await tryReverseCommission({

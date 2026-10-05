@@ -14,7 +14,7 @@ import {
   requestPasswordReset,
   resetCodesMatch,
 } from './api/_lib/passwordReset.mjs';
-import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail } from './api/_lib/email/messages.mjs';
+import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail, subscriptionApprovedEmail } from './api/_lib/email/messages.mjs';
 import { resolveAudienceEmails } from './api/_lib/email/index.mjs';
 import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
 import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
@@ -70,6 +70,14 @@ test('registration and approval emails use the required Lumo Edge copy', () => {
   assert.equal(license.subject, 'Your Lumo Edge License Key');
   assert.match(license.html, /LUMO-TEST-KEY1-ABCD/);
   assert.match(license.html, /Gold Bot/);
+  const subscription = subscriptionApprovedEmail({
+    firstName: 'Aisha',
+    email: 'aisha@example.com',
+  });
+  assert.equal(subscription.subject, 'Your Lumo Edge Subscription Is Approved');
+  assert.match(subscription.html, /Hi Aisha/);
+  assert.match(subscription.html, /subscription has been approved/);
+  assert.match(subscription.html, /https:\/\/lumoedge\.com\//);
   const reset = passwordResetEmail({ firstName: 'Aisha', resetCode: '123456' });
   assert.equal(reset.subject, 'Reset Your Lumo Edge Password');
   assert.match(reset.html, /123456/);

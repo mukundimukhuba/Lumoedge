@@ -13,6 +13,7 @@ import {
   mentorApprovedEmail,
   passwordResetEmail,
   registrationConfirmationEmail,
+  subscriptionApprovedEmail,
 } from './messages.mjs';
 import { APP_LOGIN_URL } from './template.mjs';
 
@@ -65,6 +66,25 @@ export async function notifyMentorApproved(ctx, mentor) {
       type: 'mentor_approval',
       relatedId: String(mentor.id || ''),
       relatedUserId: String(mentor.id || ''),
+      to,
+      subject: msg.subject,
+      html: msg.html,
+      text: msg.text,
+    }),
+  );
+}
+
+export async function notifySubscriptionApproved(ctx, client) {
+  const to = isValidEmail(client?.email);
+  if (!to) return { ok: false, skipped: true, error: 'no email' };
+  const msg = subscriptionApprovedEmail(client);
+  const stamp = String(client?.paymentClaimedAt || client?.approvedAt || '').trim();
+  return sendTrackedEmail(
+    tracked(ctx, {
+      idempotencyKey: `subscription-approved:${to}:${stamp}`,
+      type: 'subscription_approved',
+      relatedId: String(client?.id || ''),
+      relatedUserId: String(client?.id || to),
       to,
       subject: msg.subject,
       html: msg.html,
