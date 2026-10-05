@@ -134,26 +134,33 @@ export async function savePrivateResetLimit(id, bucket) {
   return Boolean(saved);
 }
 
-export async function savePrivateClient(entry) {
+export async function savePrivateClient(entry, preloaded) {
   const email = emailOf(entry?.email);
   if (!email) return null;
-  const current = (await listPrivateClients()) || [];
+  const db = preloaded && typeof preloaded === 'object' ? preloaded : await privateDb();
+  if (!db) return null;
+  const current = Array.isArray(db.clients) ? db.clients : [];
   const prev = findSubscription(current, email);
   const next = prev ? combineSubscriptions([prev], [{ ...entry, email }])[0] : { ...entry, email };
   if (prev?.id) next.id = prev.id;
-  const saved = await mergeRecoveryPatch({
-    clients: [next],
-    store: {
-      workspaces: {
-        [SUPER_ID]: { clientRequests: [next] },
+  const saved = await mergeRecoveryPatch(
+    {
+      clients: [next],
+      store: {
+        workspaces: {
+          [SUPER_ID]: { clientRequests: [next] },
+        },
       },
     },
-  });
+    db,
+  );
   return saved ? next : null;
 }
 
 export async function patchPrivateClient(id, patch) {
-  const current = await listPrivateClients();
+  const db = await privateDb();
+  if (!db) return null;
+  const current = Array.isArray(db.clients) ? db.clients : [];
   const prev = findSubscription(current, id);
   if (!prev) return null;
   const updated = mergeClientRecord(prev, {
@@ -163,13 +170,21 @@ export async function patchPrivateClient(id, patch) {
     id: prev.id,
   });
   if (patch?.paymentClaimed === true || prev.paymentClaimed) {
-    updated.paymentClaimed = patch?.paymentClaimed === true ? true : Boolean(prev.paymentClaimed);
+    updated.paymentClaimed = true;
     updated.paymentClaimedAt =
-      patch?.paymentClaimed === true
-        ? patch.paymentClaimedAt || prev.paymentClaimedAt || new Date().toISOString()
-        : prev.paymentClaimedAt;
+      patch?.paymentClaimedAt || prev.paymentClaimedAt || new Date().toISOString();
   }
-  const saved = await savePrivateClient(updated);
+  const saved = await mergeRecoveryPatch(
+    {
+      clients: [updated],
+      store: {
+        workspaces: {
+          [SUPER_ID]: { clientRequests: [updated] },
+        },
+      },
+    },
+    db,
+  );
   return saved ? updated : null;
 }
 

@@ -34,14 +34,9 @@ export function pickClientStatus(a, b) {
   return 'rejected';
 }
 
-/** Live Firebase queue wins for pending — stale GitHub approved must not hide new registrations. */
+/** An approval sticks. A later pending or unpaid copy must not cancel it. */
 export function pickClientStatusLive(live, backup) {
-  const l = normalizeClientStatus(live);
-  const b = normalizeClientStatus(backup);
-  if (l === 'rejected') return 'rejected';
-  if (l === 'approved') return 'approved';
-  if (l === 'pending') return 'pending';
-  return b;
+  return pickClientStatus(live, backup);
 }
 
 export function mergeClientRecordLive(backup, live) {
@@ -51,14 +46,8 @@ export function mergeClientRecordLive(backup, live) {
     ...live,
     email,
     status: pickClientStatusLive(live.status, backup.status),
-    paymentClaimed:
-      'paymentClaimed' in live
-        ? Boolean(live.paymentClaimed)
-        : Boolean(backup.paymentClaimed),
-    paymentClaimedAt:
-      'paymentClaimedAt' in live
-        ? live.paymentClaimedAt || undefined
-        : backup.paymentClaimedAt,
+    paymentClaimed: Boolean(backup.paymentClaimed) || Boolean(live.paymentClaimed),
+    paymentClaimedAt: live.paymentClaimedAt || backup.paymentClaimedAt,
     paymentVerified:
       'paymentVerified' in live
         ? Boolean(live.paymentVerified)
@@ -93,14 +82,8 @@ export function mergeClientRecord(prev, incoming) {
     ...incoming,
     email,
     status: pickClientStatus(prev.status, incoming.status),
-    paymentClaimed:
-      'paymentClaimed' in incoming
-        ? Boolean(incoming.paymentClaimed)
-        : Boolean(prev.paymentClaimed),
-    paymentClaimedAt:
-      'paymentClaimedAt' in incoming
-        ? incoming.paymentClaimedAt || undefined
-        : prev.paymentClaimedAt,
+    paymentClaimed: Boolean(prev.paymentClaimed) || Boolean(incoming.paymentClaimed),
+    paymentClaimedAt: incoming.paymentClaimedAt || prev.paymentClaimedAt,
     paymentVerified:
       'paymentVerified' in incoming
         ? Boolean(incoming.paymentVerified)

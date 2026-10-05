@@ -28,6 +28,7 @@ import {
   listPrivateAdmins,
   listPrivateClients,
   mergeAdminRosters,
+  findSubscription,
   patchPrivateClient,
   savePrivateClient,
   savePrivateMentor,
@@ -74,8 +75,8 @@ function toArray(value) {
 }
 
 function notifyApprovedSubscription(client) {
-  if (String(client?.status || '').toLowerCase() !== 'approved') return;
-  void import('./email/index.mjs')
+  if (String(client?.status || '').toLowerCase() !== 'approved') return Promise.resolve();
+  return import('./email/index.mjs')
     .then(({ notifySubscriptionApproved }) =>
       notifySubscriptionApproved({ firebaseRead, firebaseWrite, firebasePush: null }, client),
     )
@@ -458,40 +459,69 @@ export async function handleApi(req, res, pathname) {
             paymentClaimedAt: body.paymentClaimedAt || new Date().toISOString(),
           }
         : body;
-      const fbUpdated = await firebasePatchClientById(id, patch);
-      const storedClient = fbUpdated
-        ? await savePrivateClient(fbUpdated)
-        : await patchPrivateClient(id, patch);
+      let storedClient = await patchPrivateClient(id, patch);
       if (!storedClient) {
-        json(res, fbUpdated ? 503 : 404, {
-          error: fbUpdated ? 'Could not save subscription' : 'Client not found',
-          id,
-        });
+        try {
+          const merged = combineSubscriptions(
+            await loadMergedClients(loadDb),
+            await listPrivateClients(),
+          );
+          const prev = findSubscription(merged, id);
+          if (prev) {
+            storedClient = await savePrivateClient({
+              ...prev,
+              ...patch,
+              email: prev.email,
+              id: prev.id,
+            });
+          }
+        } catch {
+          storedClient = null;
+        }
+      }
+      if (!storedClient) {
+        json(res, 404, { error: 'Client not found', id });
         return true;
       }
       const approvedClient = storedClient;
-      const { db, sha } = await loadDb();
-      db.clients = mergeClients(db.clients || [], [approvedClient]);
-      mirrorClientToSuper(db, approvedClient);
-      await saveDb(db, sha);
+      const emailTask =
+        String(approvedClient.status || '').toLowerCase() === 'approved' && approving
+          ? notifyApprovedSubscription(approvedClient)
+          : null;
+      json(res, 200, visibleClient(approvedClient));
+      if (emailTask) {
+        await Promise.race([
+          emailTask,
+          new Promise((resolve) => setTimeout(resolve, 2500)),
+        ]);
+      }
+      void withTimeout(firebasePatchClientById(id, patch), 1200);
+      void (async () => {
+        try {
+          const { db, sha } = await loadDb();
+          db.clients = mergeClients(db.clients || [], [approvedClient]);
+          mirrorClientToSuper(db, approvedClient);
+          await saveDb(db, sha);
+        } catch {
+          /* private row is already stored */
+        }
+      })();
       if (String(approvedClient.status || '').toLowerCase() === 'approved') {
-        await firebaseClearSessionDevice(approvedClient.email).catch(() => undefined);
-        if (approving) notifyApprovedSubscription(approvedClient);
+        void firebaseClearSessionDevice(approvedClient.email).catch(() => undefined);
       }
       if (String(approvedClient.status || '').toLowerCase() === 'rejected') {
-        await tryReverseCommission({
+        void tryReverseCommission({
           email: approvedClient.email,
           reason: 'Subscription cancelled or payment rejected',
           actorId: 'system:client-patch',
         });
       } else if (approvedClient.paymentVerified === true) {
-        await tryQualifyCommission({
+        void tryQualifyCommission({
           email: approvedClient.email,
           source: 'payment',
           actorId: 'system:client-patch',
         });
       }
-      json(res, 200, visibleClient(approvedClient));
       return true;
     }
 

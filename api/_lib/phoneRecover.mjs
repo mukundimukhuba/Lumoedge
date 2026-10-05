@@ -330,10 +330,13 @@ export function prepareLicensePatch(patch) {
   return withWorkspaceLicenses(stripPhotos(patch || {}));
 }
 
-export async function mergeRecoveryPatch(patch) {
+export async function mergeRecoveryPatch(patch, preloaded) {
   const config = supabaseConfig();
   if (!config.url || !config.secretKey) return null;
-  const current = (await loadRecoveryDb()) || emptyDb();
+  const current =
+    preloaded && typeof preloaded === 'object'
+      ? preloaded
+      : (await loadRecoveryDb()) || emptyDb();
   const next = mergeDatabases(current, prepareLicensePatch(patch));
   next.images = {};
   next.updatedAt = new Date().toISOString();
