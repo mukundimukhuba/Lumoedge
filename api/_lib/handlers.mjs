@@ -224,8 +224,11 @@ export async function handleApi(req, res, pathname) {
       const body = await readBody(req);
       let extraAdmins = [];
       try {
-        const { db } = await loadDb();
-        extraAdmins = toArray(db.auth?.admins);
+        const { listMentors } = await import('./mentorVault.mjs');
+        extraAdmins = toArray(await Promise.race([
+          listMentors(),
+          new Promise((resolve) => setTimeout(() => resolve([]), 2500)),
+        ]));
       } catch {
         extraAdmins = [];
       }
@@ -244,8 +247,11 @@ export async function handleApi(req, res, pathname) {
       const body = await readBody(req);
       let extraAdmins = [];
       try {
-        const { db } = await loadDb();
-        extraAdmins = toArray(db.auth?.admins);
+        const { listMentors } = await import('./mentorVault.mjs');
+        extraAdmins = toArray(await Promise.race([
+          listMentors(),
+          new Promise((resolve) => setTimeout(() => resolve([]), 2500)),
+        ]));
       } catch {
         extraAdmins = [];
       }

@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { firebaseRead, firebaseWrite, findAdminByEmail, passwordsMatch, hashPassword, mergeAdminsLive } from './clientMerge.mjs';
 import { isValidEmail } from './email/send.mjs';
 import { supabaseConfig } from './supabase.mjs';
-import { loadRecoveryDb, loadResetStore, mergeRecoveryPatch, updateResetStore } from './phoneRecover.mjs';
+import { loadRecoveryDb, loadResetStore, mergeRecoveryPatch, updateResetStore, emptyResetStore } from './phoneRecover.mjs';
 import { saveMentor } from './mentorVault.mjs';
 
 export const RESET_TTL_MS = 3 * 60 * 60 * 1000;
@@ -199,21 +199,42 @@ export async function requestPasswordReset(email, opts = {}) {
       privateOk = false;
     }
   } else if (bundle) {
-    try {
-      const saved = await updateResetStore((store) => {
-        store.passwordResets[requestId] = record;
-        return store;
-      });
-      privateOk = Boolean(saved?.passwordResets?.[requestId]);
-    } catch {
-      privateOk = false;
-    }
-    if (!privateOk && bundle.save) {
+    // Private recovery/db.json is the durable path. The small reset file is optional.
+    if (bundle.save) {
       try {
-        privateOk = Boolean(await bundle.save({ passwordResets: { [requestId]: record } }));
+        privateOk = Boolean(
+          await bundle.save({
+            passwordResets: { [requestId]: record },
+            passwordResetLimits: {
+              [limitId]: { requests: [...requests, { at: now }] },
+            },
+          }),
+        );
       } catch {
         privateOk = false;
       }
+    }
+    if (!privateOk) {
+      try {
+        const saved = await updateResetStore((store) => {
+          store.passwordResets[requestId] = record;
+          store.passwordResetLimits[limitId] = {
+            requests: [...requests, { at: now }],
+          };
+          return store;
+        });
+        privateOk = Boolean(saved?.passwordResets?.[requestId]);
+      } catch {
+        privateOk = false;
+      }
+    } else {
+      void updateResetStore((store) => {
+        store.passwordResets[requestId] = record;
+        store.passwordResetLimits[limitId] = {
+          requests: [...requests, { at: now }],
+        };
+        return store;
+      }).catch(() => null);
     }
   }
   const ioOk = accounts || bundle ? false : await writeIo(io, 'lumo/passwordResets', all);
@@ -244,14 +265,7 @@ export async function requestPasswordReset(email, opts = {}) {
       /* the code was already emailed */
     }
   } else if (bundle) {
-    try {
-      await updateResetStore((store) => {
-        store.passwordResetLimits[limitId] = nextBucket;
-        return store;
-      });
-    } catch {
-      /* the code was already emailed */
-    }
+    /* limits saved with the code above */
   } else {
     await writeIo(io, `lumo/passwordResetLimits/${limitId}`, nextBucket);
   }
@@ -274,14 +288,13 @@ export async function completePasswordReset({ email, code, password, confirm }, 
   const accounts = await accountsOf(opts);
   const bundle = await privateBundle(opts);
   if (bundle?.failed) return { ok: false, error: 'save_failed' };
-  let sideStore = null;
+  let sideStore = emptyResetStore();
   if (!accounts && bundle) {
     try {
-      sideStore = await loadResetStore();
+      sideStore = (await loadResetStore()) || emptyResetStore();
     } catch {
-      sideStore = null;
+      sideStore = emptyResetStore();
     }
-    if (sideStore === null) return { ok: false, error: 'save_failed' };
   }
   const all = {
     ...(await readResetMap(io, accounts)),
@@ -344,23 +357,17 @@ export async function completePasswordReset({ email, code, password, confirm }, 
       /* password is already stored; a second submit says the code was used once this write lands */
     }
   } else if (bundle) {
-    try {
-      await updateResetStore((store) => {
-        if (store.passwordResets[requestId] || !bundle?.resets?.[requestId]) {
-          store.passwordResets[requestId] = used;
-        }
-        return store;
-      });
-    } catch {
-      /* password is already stored */
-    }
-    if (bundle?.resets?.[requestId] && bundle.save) {
+    if (bundle.save) {
       try {
         await bundle.save({ passwordResets: { [requestId]: used } });
       } catch {
-        /* legacy copy in the main database */
+        /* password is already stored */
       }
     }
+    void updateResetStore((store) => {
+      store.passwordResets[requestId] = used;
+      return store;
+    }).catch(() => null);
   } else {
     await writeIo(io, 'lumo/passwordResets', { ...all, [requestId]: used });
   }

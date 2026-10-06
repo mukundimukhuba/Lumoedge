@@ -340,14 +340,18 @@ export function emptyResetStore() {
 /** Reset codes live in their own small file so a subscription save cannot wipe them. */
 export async function loadResetStore() {
   const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return null;
-  const response = await fetch(
-    `${config.url}/storage/v1/object/${BUCKET}/${RESET_OBJECT_PATH}`,
-    { headers: storageHeaders(config.secretKey), cache: 'no-store' },
-  );
-  if (response.status === 404) return emptyResetStore();
-  if (!response.ok) return null;
+  if (!config.url || !config.secretKey) return emptyResetStore();
   try {
+    const response = await fetch(
+      `${config.url}/storage/v1/object/${BUCKET}/${RESET_OBJECT_PATH}`,
+      {
+        headers: storageHeaders(config.secretKey),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(12000),
+      },
+    );
+    if (response.status === 404) return emptyResetStore();
+    if (!response.ok) return emptyResetStore();
     const body = await response.json();
     return {
       passwordResets:
@@ -368,20 +372,8 @@ export async function loadResetStore() {
 }
 
 async function putResetStore(store) {
-  const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return false;
-  const response = await fetch(
-    `${config.url}/storage/v1/object/${BUCKET}/${RESET_OBJECT_PATH}`,
-    {
-      method: 'PUT',
-      headers: storageHeaders(config.secretKey, {
-        'Content-Type': 'application/json',
-        'x-upsert': 'true',
-      }),
-      body: JSON.stringify(store),
-    },
-  );
-  return response.ok;
+  const { uploadPrivateJson } = await import('./supabase.mjs');
+  return uploadPrivateJson(RESET_OBJECT_PATH, store);
 }
 
 /** Merge into the reset file and retry if another save landed first. */
@@ -399,6 +391,8 @@ export async function updateResetStore(mutate) {
     if (!(await putResetStore(next))) continue;
     const check = await loadResetStore();
     if (check && Number(check.version) === Number(next.version)) return check;
+    // A cached miss after a successful upload must not drop the code.
+    return next;
   }
   return null;
 }
