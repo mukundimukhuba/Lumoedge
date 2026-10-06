@@ -492,6 +492,36 @@ export async function rememberEmailSend(key) {
   }
 }
 
+export async function removeRecoveryClient(email) {
+  const key = String(email || '').trim().toLowerCase();
+  if (!key.includes('@')) return false;
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey) return false;
+  const current = await loadRecoveryDb();
+  if (!current) return false;
+  const keep = (row) => String(row?.email || '').trim().toLowerCase() !== key;
+  current.clients = (Array.isArray(current.clients) ? current.clients : []).filter(keep);
+  const workspaces = current.store?.workspaces;
+  if (workspaces && typeof workspaces === 'object') {
+    for (const workspace of Object.values(workspaces)) {
+      if (Array.isArray(workspace?.clientRequests)) {
+        workspace.clientRequests = workspace.clientRequests.filter(keep);
+      }
+    }
+  }
+  current.images = {};
+  current.updatedAt = new Date().toISOString();
+  const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
+    method: 'PUT',
+    headers: storageHeaders(config.secretKey, {
+      'Content-Type': 'application/json',
+      'x-upsert': 'true',
+    }),
+    body: JSON.stringify(current),
+  });
+  return response.ok;
+}
+
 export async function mergeRecoveryPatch(patch, preloaded) {
   const config = supabaseConfig();
   if (!config.url || !config.secretKey) return null;

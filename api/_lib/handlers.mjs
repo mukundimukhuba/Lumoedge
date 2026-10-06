@@ -15,7 +15,7 @@ import {
   verifyMentorLogin,
 } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
-import { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } from './phoneRecover.mjs';
+import { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb, removeRecoveryClient } from './phoneRecover.mjs';
 import {
   approvePrivateMentor,
   combineSubscriptions,
@@ -365,7 +365,11 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { ok: false, error: 'valid email required' });
         return true;
       }
-      const row = await getSubscription(email);
+      let row = await getSubscription(email);
+      if (!row) {
+        const saved = await listPrivateClients();
+        row = findSubscription(saved, email);
+      }
       json(res, 200, {
         ok: true,
         found: Boolean(row),
@@ -392,8 +396,9 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'valid email required' });
         return true;
       }
-      let storedClient = await saveSubscription(created);
-      if (!storedClient) storedClient = await savePrivateClient(created);
+      let storedClient = await savePrivateClient(created);
+      if (storedClient) void saveSubscription(storedClient);
+      else storedClient = await saveSubscription(created);
       if (!storedClient) {
         json(res, 503, { error: 'Could not save subscription' });
         return true;
@@ -772,18 +777,24 @@ export async function handleApi(req, res, pathname) {
 
     if (pathname.startsWith('/api/clients/') && req.method === 'DELETE') {
       const id = decodeURIComponent(pathname.replace('/api/clients/', ''));
-      const { db, sha } = await loadDb();
-      const before = (db.clients || []).length;
-      db.clients = (db.clients || []).filter((c) => c.id !== id && c.email !== id);
-      const sid = 'LM-004821';
-      const ws = db.store?.workspaces?.[sid];
-      if (ws) {
-        ws.clientRequests = (ws.clientRequests || []).filter(
-          (c) => c.id !== id && c.email !== id,
-        );
-      }
-      await saveDb(db, sha);
-      json(res, 200, { ok: true, removed: before - (db.clients || []).length });
+      const removed = id.includes('@') ? await removeRecoveryClient(id) : false;
+      json(res, 200, { ok: true, removed: removed ? 1 : 0 });
+      void (async () => {
+        try {
+          const { db, sha } = await loadDb();
+          db.clients = (db.clients || []).filter((c) => c.id !== id && c.email !== id);
+          const sid = 'LM-004821';
+          const ws = db.store?.workspaces?.[sid];
+          if (ws) {
+            ws.clientRequests = (ws.clientRequests || []).filter(
+              (c) => c.id !== id && c.email !== id,
+            );
+          }
+          await saveDb(db, sha);
+        } catch {
+          /* Supabase already removed the subscriber */
+        }
+      })();
       return true;
     }
 
