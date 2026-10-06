@@ -165,15 +165,18 @@ export function passwordResetEmail({ firstName, resetCode, name, fullName } = {}
   ].join('');
   const html = renderLumoEmail({
     title: 'Reset password',
-    preheader: 'Your Lumo Edge password reset code expires in 3 hours.',
+    preheader: code
+      ? `Your Lumo Edge code is ${code}. It lasts 3 hours. Check Spam and Promotions.`
+      : 'Your Lumo Edge password reset code expires in 3 hours. Check Spam and Promotions.',
     bodyHtml,
     ctaLabel: 'OPEN LUMO EDGE',
     ctaUrl: APP_LOGIN_URL,
   });
+  const plain = htmlToPlainText(html);
   return {
-    subject: 'Reset Your Lumo Edge Password',
+    subject: code ? `${code} is your Lumo Edge reset code` : 'Reset Your Lumo Edge Password',
     html,
-    text: htmlToPlainText(html),
+    text: code ? `Your Lumo Edge password reset code is ${code}. It expires in 3 hours.\n\n${plain}` : plain,
   };
 }
 

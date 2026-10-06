@@ -19,8 +19,8 @@ import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, pa
 import { resolveAudienceEmails } from './api/_lib/email/index.mjs';
 import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
 import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
-import { buildMime, encodeSubject, formatSmtpFailure } from './api/_lib/email/smtp.mjs';
-import { listEmailLogs } from './api/_lib/email/log.mjs';
+import { buildMime, encodeSubject, formatRfc5322, formatSmtpFailure } from './api/_lib/email/smtp.mjs';
+import { listEmailLogs, subjectForLog } from './api/_lib/email/log.mjs';
 
 function createIo(admins = []) {
   const store = { 'lumo/auth': { admins, admin: null } };
@@ -80,9 +80,11 @@ test('registration and approval emails use the required Lumo Edge copy', () => {
   assert.match(subscription.html, /subscription has been approved/);
   assert.match(subscription.html, /https:\/\/lumoedge\.com\//);
   const reset = passwordResetEmail({ firstName: 'Aisha', resetCode: '123456' });
-  assert.equal(reset.subject, 'Reset Your Lumo Edge Password');
+  assert.equal(reset.subject, '123456 is your Lumo Edge reset code');
   assert.match(reset.html, /123456/);
+  assert.match(reset.text, /123456/);
   assert.match(reset.html, /3 hours/);
+  assert.match(reset.html, /Spam and Promotions/);
 });
 
 test('40-day inactivity deactivates only after the deadline without license or client', () => {
@@ -251,6 +253,10 @@ test('Brevo key shape is classified without exposing the secret', () => {
     text: 'Hi',
   });
   assert.match(mime, /Subject: Lumo Edge email test/);
+  assert.match(mime, /Date: /);
+  assert.match(mime, /Message-ID: <lumo\.[^@]+@gmail\.com>/);
+  assert.match(formatRfc5322(new Date('2026-10-06T15:04:05.000Z')), /06 Oct 2026 15:04:05 \+0000/);
+  assert.equal(subjectForLog('password_reset', '123456 is your Lumo Edge reset code'), '****** is your Lumo Edge reset code');
   assert.match(encodeSubject('Lumo — test'), /UTF-8/);
 });
 

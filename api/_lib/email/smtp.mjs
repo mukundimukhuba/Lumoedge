@@ -16,15 +16,29 @@ export function encodeSubject(subject) {
   return `=?UTF-8?B?${Buffer.from(safe, 'utf8').toString('base64')}?=`;
 }
 
-export function buildMime({ fromName, fromEmail, to, subject, html, text, replyTo }) {
+const RFC5322_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const RFC5322_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export function formatRfc5322(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${RFC5322_DAYS[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${RFC5322_MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`;
+}
+
+export function buildMime({ fromName, fromEmail, to, subject, html, text, replyTo, messageId, date }) {
   const boundary = `lumo${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const from = `${headerSafe(fromName) || 'Lumo Edge'} <${fromEmail}>`;
+  const domain = headerSafe(String(fromEmail || '').split('@')[1] || 'lumoedge.com') || 'lumoedge.com';
+  const id =
+    headerSafe(messageId) ||
+    `<lumo.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 10)}@${domain}>`;
   const bodyText = String(text || '').replace(/\r?\n/g, CRLF);
   const bodyHtml = String(html || '').replace(/\r?\n/g, CRLF);
   return [
     `From: ${from}`,
     `To: ${to}`,
     `Subject: ${encodeSubject(subject)}`,
+    `Date: ${formatRfc5322(date instanceof Date ? date : new Date())}`,
+    `Message-ID: ${id}`,
     `Reply-To: ${headerSafe(replyTo) || fromEmail}`,
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,

@@ -203,6 +203,77 @@ function rejectedKeyError() {
   return 'Brevo rejected this key. Use a full API key from SMTP & API → API keys (starts with xkeysib-), not the SMTP key.';
 }
 
+function dayStamp(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+let deliveryCache = { at: 0, value: null };
+
+async function fetchJson(url, headers) {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(4000) });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, data };
+}
+
+/**
+ * Inbox placement counters only. Never returns recipients, message bodies, or keys.
+ */
+export async function describeDeliveryHealth(firebaseRead) {
+  const now = Date.now();
+  if (deliveryCache.value && now - deliveryCache.at < 10 * 60 * 1000) return deliveryCache.value;
+  const resolved = await resolveEmailProvider(firebaseRead);
+  const secret = describeSecret(resolved.apiKey);
+  const health = {
+    provider: resolved.provider || '',
+    transport: secret.kind === 'smtp' ? 'smtp' : resolved.provider === 'brevo' ? 'api' : resolved.provider || '',
+    brevo: { available: false },
+    resend: { configured: false, domains: [] },
+  };
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  if (resolved.provider === 'brevo' && resolved.apiKey) {
+    try {
+      const url = `https://api.brevo.com/v3/smtp/statistics/aggregatedReport?startDate=${dayStamp(start)}&endDate=${dayStamp(end)}`;
+      const res = await fetchJson(url, { accept: 'application/json', 'api-key': resolved.apiKey });
+      const data = res.data;
+      if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+        const pick = (name) => Number(data[name] || 0);
+        health.brevo = {
+          available: true,
+          requests: pick('requests'),
+          delivered: pick('delivered'),
+          hardBounces: pick('hardBounces'),
+          softBounces: pick('softBounces'),
+          blocked: pick('blocked'),
+          deferred: pick('deferred'),
+          invalid: pick('invalid'),
+        };
+      }
+    } catch {
+      health.brevo = { available: false };
+    }
+  }
+  const resend = await resolveResendApiKey(firebaseRead);
+  if (resend.apiKey) {
+    health.resend.configured = true;
+    try {
+      const res = await fetchJson('https://api.resend.com/domains', {
+        Authorization: `Bearer ${resend.apiKey}`,
+      });
+      const rows = Array.isArray(res.data?.data) ? res.data.data : [];
+      health.resend.domains = rows.slice(0, 8).map((row) => ({
+        name: String(row?.name || ''),
+        status: String(row?.status || ''),
+      }));
+      health.resend.ok = res.ok;
+    } catch {
+      health.resend.ok = false;
+    }
+  }
+  deliveryCache = { at: now, value: health };
+  return health;
+}
+
 export async function describeEmailConfig(firebaseRead) {
   const resolved = await resolveEmailProvider(firebaseRead);
   const secret = describeSecret(resolved.apiKey);

@@ -17,6 +17,13 @@ export async function findEmailLogByKey(firebaseRead, idempotencyKey) {
   return null;
 }
 
+/** Email logs must not keep a plaintext reset code that was placed in the subject. */
+export function subjectForLog(type, subject) {
+  const text = String(subject || '');
+  if (String(type || '') !== 'password_reset') return text;
+  return text.replace(/\d/g, '*');
+}
+
 export function listEmailLogs(raw, limit = 80) {
   const all = raw && typeof raw === 'object' ? raw : {};
   return Object.entries(all)
@@ -97,7 +104,7 @@ export async function sendTrackedEmail({
     await writeEmailLog(firebaseWrite, firebasePush, {
       to,
       type,
-      subject,
+      subject: subjectForLog(type, subject),
       status: result.ok ? 'sent' : result.skipped ? 'skipped' : 'failed',
       idempotencyKey,
       relatedId,
@@ -113,7 +120,7 @@ export async function sendTrackedEmail({
       await writeEmailLog(firebaseWrite, firebasePush, {
         to,
         type,
-        subject,
+        subject: subjectForLog(type, subject),
         status: 'failed',
         idempotencyKey,
         relatedId,

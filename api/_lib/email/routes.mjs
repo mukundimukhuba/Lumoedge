@@ -1,7 +1,7 @@
 import { matchSuperPassword, requireSuper, verifyAdminSession } from '../adminSession.mjs';
 import { firebaseRead, firebaseWrite } from '../clientMerge.mjs';
 import { listEmailLogs, notifyAdminManual, notifyAudience, resolveAudienceEmails } from './index.mjs';
-import { describeEmailConfig, isValidEmail } from './send.mjs';
+import { describeDeliveryHealth, describeEmailConfig, isValidEmail } from './send.mjs';
 
 const TEST_ALLOWLIST = new Set(['mukundimukhuba8@gmail.com', 'lumoedge08@gmail.com']);
 const testSends = [];
@@ -17,7 +17,13 @@ export async function handleEmailRoutes(req, res, ctx) {
 
   if (path === '/api/email/status' && req.method === 'GET') {
     const config = await describeEmailConfig(firebaseRead);
-    json(res, 200, { ok: true, ...config });
+    let delivery = null;
+    try {
+      delivery = await describeDeliveryHealth(firebaseRead);
+    } catch {
+      delivery = null;
+    }
+    json(res, 200, { ok: true, ...config, delivery });
     return true;
   }
 
