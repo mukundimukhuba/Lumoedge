@@ -39,6 +39,13 @@ import { handleSpecialRoutes } from './specialRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
 import { listMentors, saveMentor } from './mentorVault.mjs';
+import {
+  getSubscription,
+  listSubscriptions,
+  saveSubscription,
+  saveSubscriptionPatch,
+  subscriptionEntryFromBody,
+} from './subscriptionVault.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { handleEmailRoutes } from './email/routes.mjs';
 import { handleWebsiteRoutes } from './websiteRoutes.mjs';
@@ -383,68 +390,82 @@ export async function handleApi(req, res, pathname) {
     if (pathname === '/api/clients' && req.method === 'GET') {
       const merged = await loadMergedClients(loadDb);
       const saved = await listPrivateClients();
-      json(res, 200, combineSubscriptions(merged, saved).map(visibleClient));
+      const fast = await listSubscriptions();
+      json(res, 200, combineSubscriptions(merged, saved, fast).map(visibleClient));
+      return true;
+    }
+
+    if (pathname === '/api/clients/lookup' && req.method === 'GET') {
+      const url = new URL(req.url || '/', 'https://lumoedge.com');
+      const { isRegistrationEmail, normalizeRegistrationEmail } = await import(
+        './registrationEmail.mjs'
+      );
+      const fromQuery = req.query && req.query.email;
+      const email = normalizeRegistrationEmail(
+        url.searchParams.get('email') || (Array.isArray(fromQuery) ? fromQuery[0] : fromQuery) || '',
+      );
+      if (!isRegistrationEmail(email)) {
+        json(res, 400, { ok: false, error: 'valid email required' });
+        return true;
+      }
+      const row = await getSubscription(email);
+      json(res, 200, {
+        ok: true,
+        found: Boolean(row),
+        client: row
+          ? visibleClient({
+              id: row.id,
+              email: row.email,
+              firstName: row.firstName,
+              lastName: row.lastName,
+              status: row.status,
+              paymentClaimed: Boolean(row.paymentClaimed),
+              paymentClaimedAt: row.paymentClaimedAt,
+            })
+          : null,
+      });
       return true;
     }
 
     if (pathname === '/api/clients' && req.method === 'POST') {
       const body = await readBody(req);
-      const { isRegistrationEmail, normalizeRegistrationEmail } = await import(
-        './registrationEmail.mjs'
-      );
-      const email = normalizeRegistrationEmail(body.email);
-      if (!isRegistrationEmail(email)) {
+      const { isRegistrationEmail } = await import('./registrationEmail.mjs');
+      const created = subscriptionEntryFromBody(body);
+      if (!isRegistrationEmail(created.email)) {
         json(res, 400, { error: 'valid email required' });
         return true;
       }
-      let created = await firebasePostClientEntry({
-        email,
-        firstName: String(body.firstName).trim(),
-        lastName: String(body.lastName).trim(),
-        status: body.status || 'pending',
-        paymentClaimed: body.paymentClaimed,
-        paymentClaimedAt: body.paymentClaimedAt,
-        paymentVerified: false,
-      });
-      if (String(body.status || '').toLowerCase() === 'approved' || body.paymentClaimed === true) {
-        created =
-          (await firebasePatchClientById(email, {
-            status: String(body.status || '').toLowerCase() === 'approved' ? 'approved' : created?.status,
-            paymentClaimed: body.paymentClaimed === true ? true : Boolean(created?.paymentClaimed),
-            paymentClaimedAt:
-              body.paymentClaimed === true
-                ? body.paymentClaimedAt || new Date().toISOString()
-                : created?.paymentClaimedAt,
-          })) || created;
-      }
-      if (String(created?.status || '').toLowerCase() === 'approved') {
-        await firebaseClearSessionDevice(email).catch(() => undefined);
-      }
-      if (!created) {
-        json(res, 503, { error: 'Could not save subscription' });
-        return true;
-      }
-      const storedClient = await savePrivateClient(created);
+      const storedClient = await saveSubscription(created);
       if (!storedClient) {
         json(res, 503, { error: 'Could not save subscription' });
         return true;
       }
-      if (String(storedClient.status || '').toLowerCase() === 'approved') {
-        notifyApprovedSubscription(storedClient);
+      const approved = String(storedClient.status || '').toLowerCase() === 'approved';
+      json(res, 201, visibleClient(storedClient));
+      if (approved) {
+        await Promise.race([
+          notifyApprovedSubscription(storedClient),
+          new Promise((resolve) => setTimeout(resolve, 2500)),
+        ]);
+        void withTimeout(firebaseClearSessionDevice(storedClient.email), 1200);
       }
-      const { db, sha } = await loadDb();
-      db.clients = mergeClients(db.clients || [], [created]);
-      mirrorClientToSuper(db, created);
-      await saveDb(db, sha);
+      void withTimeout(savePrivateClient(storedClient), 20000);
+      void withTimeout(
+        firebasePostClientEntry({
+          email: storedClient.email,
+          firstName: storedClient.firstName,
+          lastName: storedClient.lastName,
+          status: storedClient.status,
+          paymentClaimed: storedClient.paymentClaimed,
+          paymentClaimedAt: storedClient.paymentClaimedAt,
+          paymentVerified: false,
+        }),
+        2500,
+      );
       const mentorId = String(body.mentorId || req.headers['x-lumo-admin-id'] || '').trim();
       if (mentorId) {
-        try {
-          await markMentorActivitySatisfied(mentorId, 'client');
-        } catch {
-          /* never block client create */
-        }
+        void withTimeout(markMentorActivitySatisfied(mentorId, 'client'), 2000);
       }
-      json(res, 201, visibleClient(storedClient));
       return true;
     }
 
@@ -461,7 +482,11 @@ export async function handleApi(req, res, pathname) {
           }
         : body;
       if (approving && !body.paymentClaimedAt) delete patch.paymentClaimedAt;
-      let storedClient = await patchPrivateClient(id, patch);
+      let storedClient = await saveSubscriptionPatch(id, patch);
+      const storedInVault = Boolean(storedClient);
+      if (!storedClient) {
+        storedClient = await patchPrivateClient(id, patch);
+      }
       if (!storedClient) {
         try {
           const merged = combineSubscriptions(
@@ -491,6 +516,8 @@ export async function handleApi(req, res, pathname) {
           ? notifyApprovedSubscription(approvedClient)
           : null;
       json(res, 200, visibleClient(approvedClient));
+      if (storedInVault) void withTimeout(savePrivateClient(approvedClient), 20000);
+      else void saveSubscription(approvedClient);
       if (emailTask) {
         await Promise.race([
           emailTask,
