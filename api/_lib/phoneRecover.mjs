@@ -4,6 +4,7 @@ import { supabaseConfig } from './supabase.mjs';
 
 const BUCKET = 'lumo-private';
 const OBJECT_PATH = 'recovery/db.json';
+const RESET_OBJECT_PATH = 'recovery/password-resets.json';
 const MAX_BODY_CHARS = 2_000_000;
 
 const PHOTO_KEYS = new Set([
@@ -328,6 +329,76 @@ function withWorkspaceLicenses(patch) {
 
 export function prepareLicensePatch(patch) {
   return withWorkspaceLicenses(stripPhotos(patch || {}));
+}
+
+export function emptyResetStore() {
+  return { passwordResets: {}, passwordResetLimits: {}, version: 0 };
+}
+
+/** Reset codes live in their own small file so a subscription save cannot wipe them. */
+export async function loadResetStore() {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey) return null;
+  const response = await fetch(
+    `${config.url}/storage/v1/object/${BUCKET}/${RESET_OBJECT_PATH}`,
+    { headers: storageHeaders(config.secretKey), cache: 'no-store' },
+  );
+  if (response.status === 404) return emptyResetStore();
+  if (!response.ok) return null;
+  try {
+    const body = await response.json();
+    return {
+      passwordResets:
+        body?.passwordResets && typeof body.passwordResets === 'object' && !Array.isArray(body.passwordResets)
+          ? body.passwordResets
+          : {},
+      passwordResetLimits:
+        body?.passwordResetLimits &&
+        typeof body.passwordResetLimits === 'object' &&
+        !Array.isArray(body.passwordResetLimits)
+          ? body.passwordResetLimits
+          : {},
+      version: Number(body?.version || 0),
+    };
+  } catch {
+    return emptyResetStore();
+  }
+}
+
+async function putResetStore(store) {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey) return false;
+  const response = await fetch(
+    `${config.url}/storage/v1/object/${BUCKET}/${RESET_OBJECT_PATH}`,
+    {
+      method: 'PUT',
+      headers: storageHeaders(config.secretKey, {
+        'Content-Type': 'application/json',
+        'x-upsert': 'true',
+      }),
+      body: JSON.stringify(store),
+    },
+  );
+  return response.ok;
+}
+
+/** Merge into the reset file and retry if another save landed first. */
+export async function updateResetStore(mutate) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const current = await loadResetStore();
+    if (!current) return null;
+    const draft = {
+      passwordResets: { ...(current.passwordResets || {}) },
+      passwordResetLimits: { ...(current.passwordResetLimits || {}) },
+      version: Number(current.version || 0) + 1,
+    };
+    const next = (await mutate(draft)) || draft;
+    next.version = draft.version;
+    if (!(await putResetStore(next))) continue;
+    const check = await loadResetStore();
+    if (check && Number(check.version) === Number(next.version)) return check;
+  }
+  return null;
 }
 
 export async function mergeRecoveryPatch(patch, preloaded) {

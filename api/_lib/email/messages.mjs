@@ -159,13 +159,13 @@ export function passwordResetEmail({ firstName, resetCode, name, fullName } = {}
     paragraph('We received a request to reset your Lumo Edge password.'),
     paragraph('Your password reset code is:'),
     licenseKeyBox(code, 'Password reset code'),
-    paragraph('This code expires in 15 minutes.'),
+    paragraph('This code expires in 3 hours. Use this code even if an older email arrives later.'),
     paragraph('If you did not request this password reset, you can safely ignore this email.'),
     paragraph('Lumo Edge Team'),
   ].join('');
   const html = renderLumoEmail({
     title: 'Reset password',
-    preheader: 'Your Lumo Edge password reset code expires in 15 minutes.',
+    preheader: 'Your Lumo Edge password reset code expires in 3 hours.',
     bodyHtml,
     ctaLabel: 'OPEN LUMO EDGE',
     ctaUrl: APP_LOGIN_URL,

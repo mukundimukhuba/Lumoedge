@@ -12,6 +12,7 @@ import {
   generateResetCode,
   hashResetCode,
   requestPasswordReset,
+  RESET_TTL_MS,
   resetCodesMatch,
 } from './api/_lib/passwordReset.mjs';
 import { mentorApprovedEmail, registrationConfirmationEmail, licenseKeyEmail, passwordResetEmail, subscriptionApprovedEmail } from './api/_lib/email/messages.mjs';
@@ -81,7 +82,7 @@ test('registration and approval emails use the required Lumo Edge copy', () => {
   const reset = passwordResetEmail({ firstName: 'Aisha', resetCode: '123456' });
   assert.equal(reset.subject, 'Reset Your Lumo Edge Password');
   assert.match(reset.html, /123456/);
-  assert.match(reset.html, /15 minutes/);
+  assert.match(reset.html, /3 hours/);
 });
 
 test('40-day inactivity deactivates only after the deadline without license or client', () => {
@@ -121,11 +122,18 @@ test('password reset codes are hashed, single-use, and expire', async () => {
   assert.equal(reusedUnknown.ok, false);
   assert.equal(reusedUnknown.error, 'not_registered');
 
+  const spaced = await completePasswordReset(
+    { email: 'mentor@example.com', code: '111 111', password: 'new-password', confirm: 'new-password' },
+    { io, now: 1_000 + 30 * 60 * 1000 },
+  );
+  assert.equal(spaced.ok, true);
+  await requestPasswordReset('mentor@example.com', { io, now: 40_000, code: '333333', notify: async () => {} });
   const expired = await completePasswordReset(
-    { email: 'mentor@example.com', code: '111111', password: 'new-password', confirm: 'new-password' },
-    { io, now: 1_000 + 16 * 60 * 1000 },
+    { email: 'mentor@example.com', code: '333333', password: 'new-password', confirm: 'new-password' },
+    { io, now: 40_000 + RESET_TTL_MS + 1000 },
   );
   assert.equal(expired.ok, false);
+  assert.equal(expired.error, 'expired');
 
   await requestPasswordReset('mentor@example.com', { io, now: 20_000, code: '222222', notify: async () => {} });
   const ok = await completePasswordReset(
@@ -141,6 +149,38 @@ test('password reset codes are hashed, single-use, and expire', async () => {
     { io, now: 22_000 },
   );
   assert.equal(again.ok, false);
+  assert.equal(again.error, 'code_used');
+});
+
+test('extra reset requests do not pretend a new code was emailed', async () => {
+  const io = createIo([
+    { id: 'LM-1', email: 'mentor@example.com', role: 'admin', password: hashPassword('old-pass') },
+  ]);
+  let sends = 0;
+  for (let i = 0; i < 5; i += 1) {
+    const sent = await requestPasswordReset('mentor@example.com', {
+      io,
+      now: 2_000_000 + i * 1000,
+      code: String(200000 + i),
+      notify: async () => {
+        sends += 1;
+        return { ok: true };
+      },
+    });
+    assert.equal(sent.ok, true);
+  }
+  const blocked = await requestPasswordReset('mentor@example.com', {
+    io,
+    now: 2_006_000,
+    code: '299999',
+    notify: async () => {
+      sends += 1;
+      return { ok: true };
+    },
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error, 'rate_limited');
+  assert.equal(sends, 5);
 });
 
 test('client broadcast reads the client roster and skips the full workspace store', async () => {
