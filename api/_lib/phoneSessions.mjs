@@ -3,7 +3,7 @@ import {
   sessionEmailKey,
   sessionWithoutDevice,
 } from './clientMerge.mjs';
-import { supabaseConfig } from './supabase.mjs';
+import { supabaseConfig, uploadPrivateJson } from './supabase.mjs';
 
 const BUCKET = 'lumo-private';
 const OBJECT_PATH = 'recovery/phone-sessions.json';
@@ -75,22 +75,7 @@ export async function loadPhoneSessionStore() {
 }
 
 async function putPhoneSessionStore(store) {
-  const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return false;
-  try {
-    const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
-      method: 'PUT',
-      headers: headers(config.secretKey, {
-        'Content-Type': 'application/json',
-        'x-upsert': 'true',
-      }),
-      body: JSON.stringify(store),
-      signal: AbortSignal.timeout(FETCH_MS),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  return uploadPrivateJson(OBJECT_PATH, store);
 }
 
 async function updatePhoneSessionStore(mutate) {

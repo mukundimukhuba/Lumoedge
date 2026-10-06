@@ -8,7 +8,7 @@ import {
   putPhoneSession,
 } from './phoneSessions.mjs';
 import { readAdminSession, writeAdminSession } from './adminSessionStore.mjs';
-import { supabaseConfig } from './supabase.mjs';
+import { supabaseConfig, uploadPrivateJson } from './supabase.mjs';
 
 const BUCKET = 'lumo-private';
 const SPECIAL_PATH = 'recovery/special.json';
@@ -75,22 +75,7 @@ async function loadSpecial() {
 }
 
 async function saveSpecial(store) {
-  const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return false;
-  try {
-    const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${SPECIAL_PATH}`, {
-      method: 'PUT',
-      headers: headers(config.secretKey, {
-        'Content-Type': 'application/json',
-        'x-upsert': 'true',
-      }),
-      body: JSON.stringify(store),
-      signal: AbortSignal.timeout(FETCH_MS),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  return uploadPrivateJson(SPECIAL_PATH, store);
 }
 
 async function updateSpecial(mutate) {

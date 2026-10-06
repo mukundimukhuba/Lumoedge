@@ -4,7 +4,7 @@ import {
   normalizeRegistrationEmail,
   splitNameFromEmail,
 } from './registrationEmail.mjs';
-import { supabaseConfig } from './supabase.mjs';
+import { supabaseConfig, uploadPrivateJson } from './supabase.mjs';
 
 const BUCKET = 'lumo-private';
 const OBJECT_PATH = 'recovery/subscriptions.json';
@@ -110,27 +110,12 @@ export async function loadSubscriptionStore() {
       version: Number(body?.version || 0),
     };
   } catch {
-    return null;
+    return emptySubscriptionStore();
   }
 }
 
 async function putSubscriptionStore(store) {
-  const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return false;
-  try {
-    const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
-      method: 'PUT',
-      headers: headers(config.secretKey, {
-        'Content-Type': 'application/json',
-        'x-upsert': 'true',
-      }),
-      body: JSON.stringify(store),
-      signal: AbortSignal.timeout(FETCH_MS),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
+  return uploadPrivateJson(OBJECT_PATH, store);
 }
 
 async function updateSubscriptionStore(mutate) {
@@ -142,6 +127,7 @@ async function updateSubscriptionStore(mutate) {
     if (!(await putSubscriptionStore(next))) continue;
     const check = await loadSubscriptionStore();
     if (check && Number(check.version) === Number(next.version)) return check;
+    return next;
   }
   return null;
 }

@@ -83,3 +83,27 @@ export async function supabaseStatus() {
     databaseMessage: database.ok ? undefined : database.message || undefined,
   };
 }
+
+/** Create or replace a private JSON file. New files are created with POST. */
+export async function uploadPrivateJson(objectPath, value) {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey || !objectPath) return false;
+  const url = `${config.url}/storage/v1/object/lumo-private/${objectPath}`;
+  const init = {
+    headers: {
+      apikey: config.secretKey,
+      Authorization: `Bearer ${config.secretKey}`,
+      'Content-Type': 'application/json',
+      'x-upsert': 'true',
+    },
+    body: JSON.stringify(value ?? {}),
+  };
+  try {
+    const posted = await fetch(url, { ...init, method: 'POST' });
+    if (posted.ok) return true;
+    const updated = await fetch(url, { ...init, method: 'PUT' });
+    return updated.ok;
+  } catch {
+    return false;
+  }
+}

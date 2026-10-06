@@ -392,7 +392,8 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'valid email required' });
         return true;
       }
-      const storedClient = await saveSubscription(created);
+      let storedClient = await saveSubscription(created);
+      if (!storedClient) storedClient = await savePrivateClient(created);
       if (!storedClient) {
         json(res, 503, { error: 'Could not save subscription' });
         return true;
