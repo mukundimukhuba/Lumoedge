@@ -1,4 +1,3 @@
-import { firebaseRead, firebaseWrite } from './clientMerge.mjs';
 import { mergeDatabases } from './mergeDb.mjs';
 import { vaultEntryToLicense } from './repairLicenses.mjs';
 import {
@@ -39,46 +38,55 @@ async function rememberRecovery(patch) {
 }
 
 export async function loadFirebaseVault() {
-  let live = [];
-  try {
-    live = vaultArray(await firebaseRead('lumo/vault'));
-  } catch {
-    live = [];
-  }
-  const saved = vaultArray((await savedRecoveryDb())?.vault);
-  if (!live.length) return saved;
-  if (!saved.length) return live;
-  return mergeDatabases({ vault: saved }, { vault: live }).vault || live;
+  return vaultArray((await savedRecoveryDb())?.vault);
 }
 
 async function saveFirebaseVault(entries) {
-  const ok = await firebaseWrite('lumo/vault', entries);
+  // One private-database write. Do not also call firebaseWrite — that path
+  // rewrites recovery/db.json a second time and makes phones time out.
   const saved = await rememberRecovery({ vault: entries, images: {} });
-  if (!ok && !saved) throw new Error('Could not save license vault');
+  if (!saved) throw new Error('Could not save license vault');
 }
 
-async function loadWorkspace(adminId) {
+async function loadWorkspace(adminId, recovery = null) {
   if (!adminId) return null;
-  try {
-    const row = await firebaseRead(`lumo/store/workspaces/${encodeURIComponent(adminId)}`);
-    if (row && typeof row === 'object') return row;
-  } catch {
-    /* Firebase is off. Use the saved copy. */
-  }
-  const saved = (await savedRecoveryDb())?.store?.workspaces?.[adminId];
+  const db = recovery || (await savedRecoveryDb());
+  const saved = db?.store?.workspaces?.[adminId];
   return saved && typeof saved === 'object' ? saved : null;
 }
 
 async function saveWorkspace(adminId, workspace) {
-  const ok = await firebaseWrite(
-    `lumo/store/workspaces/${encodeURIComponent(adminId)}`,
-    workspace,
-  );
   const saved = await rememberRecovery({
     images: {},
     store: { workspaces: { [adminId]: workspace } },
   });
-  if (!ok && !saved) throw new Error('Could not save workspace licenses');
+  if (!saved) throw new Error('Could not save workspace licenses');
+}
+
+function workspaceLicensePatch(workspace, adminId, key, patch, vaultEntry) {
+  const baseWs = workspace || {
+    id: adminId,
+    eas: [],
+    licenses: [],
+    clientRequests: [],
+    mt5: {},
+    profile: {},
+    orders: [],
+    revokedKeys: [],
+  };
+  const licenses = dbList(baseWs.licenses);
+  const existing = licenses.find(
+    (license) => license && keysMatch(String(license.key || ''), key) && license.status !== 'deleted',
+  );
+  const base = existing || (vaultEntry ? vaultEntryToLicense(vaultEntry) : null);
+  if (!base) return baseWs;
+  const nextLicense = { ...base, ...patch, ownerAdminId: base.ownerAdminId || adminId };
+  const nextLicenses = existing
+    ? licenses.map((license) =>
+        keysMatch(String(license?.key || ''), key) ? nextLicense : license,
+      )
+    : [nextLicense, ...licenses];
+  return { ...baseWs, id: adminId, licenses: nextLicenses };
 }
 
 function applyRevokedKeys(entries, revokedKeys) {
@@ -100,29 +108,8 @@ function workspaceMap(adminId, workspace) {
 
 async function upsertWorkspaceLicense(adminId, key, patch, vaultEntry) {
   if (!adminId || !key) return null;
-  const workspace = (await loadWorkspace(adminId)) || {
-    id: adminId,
-    eas: [],
-    licenses: [],
-    clientRequests: [],
-    mt5: {},
-    profile: {},
-    orders: [],
-    revokedKeys: [],
-  };
-  const licenses = dbList(workspace.licenses);
-  const existing = licenses.find(
-    (license) => license && keysMatch(String(license.key || ''), key) && license.status !== 'deleted',
-  );
-  const base = existing || (vaultEntry ? vaultEntryToLicense(vaultEntry) : null);
-  if (!base) return workspace;
-  const nextLicense = { ...base, ...patch, ownerAdminId: base.ownerAdminId || adminId };
-  const nextLicenses = existing
-    ? licenses.map((license) =>
-        keysMatch(String(license?.key || ''), key) ? nextLicense : license,
-      )
-    : [nextLicense, ...licenses];
-  const next = { ...workspace, id: adminId, licenses: nextLicenses };
+  const workspace = await loadWorkspace(adminId);
+  const next = workspaceLicensePatch(workspace, adminId, key, patch, vaultEntry);
   await saveWorkspace(adminId, next);
   return next;
 }
@@ -177,9 +164,16 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       },
     );
     merged.vault = applyRevokedKeys(merged.vault, revokedKeys);
-    await saveFirebaseVault(merged.vault);
-    if (adminId && merged.store?.workspaces?.[adminId]) {
-      await saveWorkspace(adminId, merged.store.workspaces[adminId]);
+    const workspaceToSave =
+      adminId && merged.store?.workspaces?.[adminId] ? merged.store.workspaces[adminId] : null;
+    const saved = await rememberRecovery({
+      vault: merged.vault,
+      images: {},
+      ...(workspaceToSave ? { store: { workspaces: { [adminId]: workspaceToSave } } } : {}),
+    });
+    if (!saved) {
+      json(res, 503, { ok: false, error: 'Could not save license vault' });
+      return true;
     }
 
     try {
@@ -266,18 +260,25 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    const vault = await loadFirebaseVault();
+    // One download of the private database. Claim used to load and rewrite it
+    // several times, so phones hit "Activation timed out" while the server was
+    // still writing.
+    const recovery = await savedRecoveryDb();
+    const vault = vaultArray(recovery?.vault);
+    const allWorkspaces =
+      recovery?.store?.workspaces && typeof recovery.store.workspaces === 'object'
+        ? recovery.store.workspaces
+        : {};
     let entry = findVaultEntry(vault, key);
     let ownerId = entry?.ownerAdminId || entry?.adminId || '';
-    let workspace = ownerId ? await loadWorkspace(ownerId) : null;
+    let workspace = ownerId ? allWorkspaces[ownerId] || null : null;
 
     if (!entry) {
-      if (ownerId && workspace) {
-        const hit = findWorkspaceLicense(workspaceMap(ownerId, workspace), key);
-        if (hit) {
-          entry = hit.license;
-          ownerId = hit.ownerId || ownerId;
-        }
+      const hit = findWorkspaceLicense(allWorkspaces, key);
+      if (hit) {
+        entry = hit.license;
+        ownerId = hit.ownerId || ownerId;
+        workspace = allWorkspaces[ownerId] || null;
       }
     }
 
@@ -290,42 +291,66 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    const workspaces = workspaceMap(ownerId, workspace);
+    const workspaces = ownerId ? workspaceMap(ownerId, workspace) : allWorkspaces;
     const emailError = validateEmailAccess(entry, email, vault, workspaces);
     if (emailError) {
       json(res, 403, { ok: false, error: emailError });
       return true;
     }
 
+    // Already open for this email — return the license without rewriting db.json.
+    if (
+      String(entry.status || '').toLowerCase() === 'assigned' &&
+      String(entry.assignedEmail || '').toLowerCase() === email
+    ) {
+      json(res, 200, { ok: true, license: toClaimPayload(entry) });
+      return true;
+    }
+
     const assigned = assignEntry(entry, email);
     const nextVault = dbList(vault).map((item) => (keysMatch(item?.key, key) ? assigned : item));
     if (!findVaultEntry(nextVault, key)) nextVault.unshift(assigned);
-    await saveFirebaseVault(nextVault);
 
     ownerId = assigned.ownerAdminId || assigned.adminId || ownerId;
-    await upsertWorkspaceLicense(
-      ownerId,
-      key,
-      {
-        assignedEmail: assigned.assignedEmail || email,
-        assignedAt: assigned.assignedAt,
-        status: assigned.status || 'assigned',
-      },
-      assigned,
-    );
+    const nextWorkspace = ownerId
+      ? workspaceLicensePatch(
+          workspace || allWorkspaces[ownerId] || null,
+          ownerId,
+          key,
+          {
+            assignedEmail: assigned.assignedEmail || email,
+            assignedAt: assigned.assignedAt,
+            status: assigned.status || 'assigned',
+          },
+          assigned,
+        )
+      : null;
 
-    try {
-      const { tryQualifyCommission } = await import('./commissionEngine.mjs');
-      await tryQualifyCommission({
-        email,
-        source: 'claim',
-        actorId: 'system:license-claim',
+    const saved = await rememberRecovery({
+      vault: nextVault,
+      images: {},
+      ...(ownerId && nextWorkspace
+        ? { store: { workspaces: { [ownerId]: nextWorkspace } } }
+        : {}),
+    });
+    if (!saved) {
+      json(res, 503, {
+        ok: false,
+        error: 'Could not activate that license. Tap Activate again.',
       });
-    } catch (err) {
-      console.warn('[commission] claim hook failed', err);
+      return true;
     }
 
     json(res, 200, { ok: true, license: toClaimPayload(assigned) });
+    void import('./commissionEngine.mjs')
+      .then(({ tryQualifyCommission }) =>
+        tryQualifyCommission({
+          email,
+          source: 'claim',
+          actorId: 'system:license-claim',
+        }),
+      )
+      .catch((err) => console.warn('[commission] claim hook failed', err));
     return true;
   }
 
@@ -338,7 +363,8 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    const vault = await loadFirebaseVault();
+    const recovery = await savedRecoveryDb();
+    const vault = vaultArray(recovery?.vault);
     const entry = findVaultEntry(vault, key);
     if (!entry) {
       json(res, 400, { ok: false, error: 'Invalid key' });
@@ -351,22 +377,36 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    await saveFirebaseVault(
-      dbList(vault).map((item) => (keysMatch(item?.key, key) ? released.entry : item)),
+    const nextVault = dbList(vault).map((item) =>
+      keysMatch(item?.key, key) ? released.entry : item,
     );
-
     const adminId = released.entry.ownerAdminId || released.entry.adminId || '';
-    await upsertWorkspaceLicense(
-      adminId,
-      key,
-      {
-        assignedEmail: null,
-        assignedAt: null,
-        status: 'active',
-        deviceId: null,
-      },
-      released.entry,
-    );
+    const currentWs = adminId ? recovery?.store?.workspaces?.[adminId] || null : null;
+    const nextWorkspace = adminId
+      ? workspaceLicensePatch(
+          currentWs,
+          adminId,
+          key,
+          {
+            assignedEmail: null,
+            assignedAt: null,
+            status: 'active',
+            deviceId: null,
+          },
+          released.entry,
+        )
+      : null;
+    const saved = await rememberRecovery({
+      vault: nextVault,
+      images: {},
+      ...(adminId && nextWorkspace
+        ? { store: { workspaces: { [adminId]: nextWorkspace } } }
+        : {}),
+    });
+    if (!saved) {
+      json(res, 503, { ok: false, error: 'Could not release that license.' });
+      return true;
+    }
     json(res, 200, { ok: true });
     return true;
   }
