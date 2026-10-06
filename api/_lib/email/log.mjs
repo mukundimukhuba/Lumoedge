@@ -1,3 +1,5 @@
+import { emailSendAlreadyRecorded, rememberEmailSend } from '../phoneRecover.mjs';
+
 /**
  * Email delivery log + idempotency helpers (Firebase RTDB).
  * Never store API keys, passwords, or reset codes here.
@@ -89,7 +91,7 @@ export async function sendTrackedEmail({
   const send = sendLumoEmail || sendResendEmail;
   try {
     const existing = await findEmailLogByKey(firebaseRead, idempotencyKey);
-    if (existing) {
+    if (existing || (idempotencyKey && (await emailSendAlreadyRecorded(idempotencyKey)))) {
       return { ok: true, skipped: true, reason: 'already_sent', log: existing };
     }
     const result = await send({
@@ -114,6 +116,7 @@ export async function sendTrackedEmail({
       messageId: result.id || '',
       provider: result.provider || '',
     });
+    if (result?.ok && idempotencyKey) await rememberEmailSend(idempotencyKey);
     return result;
   } catch (e) {
     try {

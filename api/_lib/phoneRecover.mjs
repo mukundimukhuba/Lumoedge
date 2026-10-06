@@ -5,6 +5,8 @@ import { supabaseConfig } from './supabase.mjs';
 const BUCKET = 'lumo-private';
 const OBJECT_PATH = 'recovery/db.json';
 const RESET_OBJECT_PATH = 'recovery/password-resets.json';
+const SENT_OBJECT_PATH = 'recovery/email-sent.json';
+const SENT_KEEP = 2500;
 const MAX_BODY_CHARS = 2_000_000;
 
 const PHOTO_KEYS = new Set([
@@ -399,6 +401,95 @@ export async function updateResetStore(mutate) {
     if (check && Number(check.version) === Number(next.version)) return check;
   }
   return null;
+}
+
+export function emptySentStore() {
+  return { sent: {}, version: 0 };
+}
+
+export function nextSentStore(current, key, now = new Date().toISOString()) {
+  const sent = {
+    ...(current?.sent && typeof current.sent === 'object' && !Array.isArray(current.sent) ? current.sent : {}),
+  };
+  const id = String(key || '').trim().slice(0, 180);
+  if (id) sent[id] = now;
+  const entries = Object.entries(sent)
+    .filter(([name, at]) => name && at)
+    .sort((a, b) => String(b[1]).localeCompare(String(a[1])))
+    .slice(0, SENT_KEEP);
+  return { sent: Object.fromEntries(entries), version: Number(current?.version || 0) + 1 };
+}
+
+export function emailSendSeen(store, key) {
+  const id = String(key || '').trim();
+  return Boolean(id && store?.sent && Object.prototype.hasOwnProperty.call(store.sent, id));
+}
+
+export async function loadSentStore() {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey) return null;
+  const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${SENT_OBJECT_PATH}`, {
+    headers: storageHeaders(config.secretKey),
+    cache: 'no-store',
+  });
+  if (response.status === 404) return emptySentStore();
+  if (!response.ok) return null;
+  try {
+    const body = await response.json();
+    return {
+      sent: body?.sent && typeof body.sent === 'object' && !Array.isArray(body.sent) ? body.sent : {},
+      version: Number(body?.version || 0),
+    };
+  } catch {
+    return emptySentStore();
+  }
+}
+
+async function putSentStore(store) {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey) return false;
+  const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${SENT_OBJECT_PATH}`, {
+    method: 'PUT',
+    headers: storageHeaders(config.secretKey, {
+      'Content-Type': 'application/json',
+      'x-upsert': 'true',
+    }),
+    body: JSON.stringify(store),
+  });
+  return response.ok;
+}
+
+async function updateSentStore(mutate) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const current = await loadSentStore();
+    if (!current) return null;
+    const next = mutate(current) || current;
+    if (!(await putSentStore(next))) continue;
+    const check = await loadSentStore();
+    if (check && Number(check.version) === Number(next.version)) return check;
+  }
+  return null;
+}
+
+export async function emailSendAlreadyRecorded(key) {
+  try {
+    const store = await loadSentStore();
+    if (!store) return false;
+    return emailSendSeen(store, key);
+  } catch {
+    return false;
+  }
+}
+
+export async function rememberEmailSend(key) {
+  const id = String(key || '').trim();
+  if (!id) return false;
+  try {
+    const saved = await updateSentStore((store) => nextSentStore(store, id));
+    return emailSendSeen(saved, id);
+  } catch {
+    return false;
+  }
 }
 
 export async function mergeRecoveryPatch(patch, preloaded) {

@@ -78,10 +78,9 @@ export async function notifySubscriptionApproved(ctx, client) {
   const to = isValidEmail(client?.email);
   if (!to) return { ok: false, skipped: true, error: 'no email' };
   const msg = subscriptionApprovedEmail(client);
-  const stamp = String(client?.paymentClaimedAt || client?.approvedAt || '').trim();
   return sendTrackedEmail(
     tracked(ctx, {
-      idempotencyKey: `subscription-approved:${to}:${stamp}`,
+      idempotencyKey: `subscription-approved:${to}`,
       type: 'subscription_approved',
       relatedId: String(client?.id || ''),
       relatedUserId: String(client?.id || to),

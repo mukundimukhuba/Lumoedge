@@ -7,6 +7,10 @@ import { loadRecoveryDb, loadResetStore, mergeRecoveryPatch, updateResetStore } 
 export const RESET_TTL_MS = 3 * 60 * 60 * 1000;
 export const RESET_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 export const RESET_MAX_PER_EMAIL = 5;
+
+export function emailQuotaReached(error) {
+  return /quota|credit|daily limit|too many emails|emails are finished/i.test(String(error || ''));
+}
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_MAX_ATTEMPTS = 8;
 const GENERIC_OK = {
@@ -224,7 +228,9 @@ export async function requestPasswordReset(email, opts = {}) {
         fullName: hit.fullName,
         requestId,
       });
-      if (sent && sent.ok === false) return { ok: false, error: 'send_failed' };
+      if (sent && sent.ok === false) {
+        return { ok: false, error: emailQuotaReached(sent.error) ? 'email_quota' : 'send_failed' };
+      }
     } catch {
       return { ok: false, error: 'send_failed' };
     }

@@ -21,6 +21,8 @@ import { parseMt5SymbolNames } from './api/_lib/mt5Bridge.mjs';
 import { describeEmailConfig, describeSecret, sendLumoEmail } from './api/_lib/email/send.mjs';
 import { buildMime, encodeSubject, formatRfc5322, formatSmtpFailure } from './api/_lib/email/smtp.mjs';
 import { listEmailLogs, subjectForLog } from './api/_lib/email/log.mjs';
+import { emailSendSeen, nextSentStore } from './api/_lib/phoneRecover.mjs';
+import { emailQuotaReached } from './api/_lib/passwordReset.mjs';
 
 function createIo(admins = []) {
   const store = { 'lumo/auth': { admins, admin: null } };
@@ -183,6 +185,26 @@ test('extra reset requests do not pretend a new code was emailed', async () => {
   assert.equal(blocked.ok, false);
   assert.equal(blocked.error, 'rate_limited');
   assert.equal(sends, 5);
+});
+
+test('the same approval is recorded once and a quota failure is named', async () => {
+  const first = nextSentStore({ sent: {}, version: 0 }, 'subscription-approved:mentor@example.com', '2026-10-06T18:00:00.000Z');
+  const second = nextSentStore(first, 'subscription-approved:mentor@example.com', '2026-10-06T18:05:00.000Z');
+  assert.equal(emailSendSeen(second, 'subscription-approved:mentor@example.com'), true);
+  assert.equal(Object.keys(second.sent).length, 1);
+  assert.equal(emailQuotaReached('You have exceeded your daily email quota'), true);
+  assert.equal(emailQuotaReached('SMTP timed out'), false);
+  const io = createIo([
+    { id: 'LM-1', email: 'mentor@example.com', role: 'admin', password: hashPassword('old-pass') },
+  ]);
+  const blocked = await requestPasswordReset('mentor@example.com', {
+    io,
+    now: 3_000_000,
+    code: '333333',
+    notify: async () => ({ ok: false, error: 'Monthly email credits have been used' }),
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error, 'email_quota');
 });
 
 test('client broadcast reads the client roster and skips the full workspace store', async () => {

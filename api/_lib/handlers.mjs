@@ -456,9 +456,10 @@ export async function handleApi(req, res, pathname) {
             ...body,
             status: 'approved',
             paymentClaimed: true,
-            paymentClaimedAt: body.paymentClaimedAt || new Date().toISOString(),
+            ...(body.paymentClaimedAt ? { paymentClaimedAt: body.paymentClaimedAt } : {}),
           }
         : body;
+      if (approving && !body.paymentClaimedAt) delete patch.paymentClaimedAt;
       let storedClient = await patchPrivateClient(id, patch);
       if (!storedClient) {
         try {
