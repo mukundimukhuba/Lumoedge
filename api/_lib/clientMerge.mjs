@@ -350,6 +350,7 @@ export function publicAdminRecord(admin) {
   if (!admin || typeof admin !== 'object') return admin;
   const out = { ...admin };
   delete out.password;
+  delete out.portalPassword;
   return out;
 }
 
@@ -466,7 +467,8 @@ export async function verifyMentorLogin(
     return loginResultFor(healed, normalized);
   }
 
-  if (chosen && !String(chosen.password || '')) {
+  if (!chosen) return { ok: false, error: 'not_registered' };
+  if (!String(chosen.password || '')) {
     return { ok: false, error: 'password_reset_required' };
   }
   return { ok: false, error: 'invalid_credentials' };

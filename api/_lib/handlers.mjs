@@ -38,6 +38,7 @@ import { handleLicenseRoutes, loadFirebaseVault } from './licenseRoutes.mjs';
 import { handleSpecialRoutes } from './specialRoutes.mjs';
 import { handleCommissionRoutes } from './commissionRoutes.mjs';
 import { handleMentorPasswordRoutes } from './mentorPassword.mjs';
+import { listMentors, saveMentor } from './mentorVault.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { handleEmailRoutes } from './email/routes.mjs';
 import { handleWebsiteRoutes } from './websiteRoutes.mjs';
@@ -532,7 +533,8 @@ export async function handleApi(req, res, pathname) {
       const { db } = await loadDb();
       const localAdmins = toArray(db.auth?.admins);
       const savedAdmins = await listPrivateAdmins();
-      json(res, 200, publicAdminList(mergeAdminRosters(fbAdmins, localAdmins, savedAdmins)));
+      const vaultAdmins = await listMentors();
+      json(res, 200, publicAdminList(mergeAdminRosters(fbAdmins, localAdmins, savedAdmins, vaultAdmins)));
       return true;
     }
 
@@ -544,21 +546,20 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'email and password required' });
         return true;
       }
-      try {
-        const limited = await consumeLoginAttempt(email);
-        if (limited.limited) {
-          json(res, 401, { ok: false, error: 'invalid_credentials' });
-          return true;
-        }
-      } catch {
-        /* never block a valid login if the limiter is unavailable */
-      }
       let backupAdmins = [];
       try {
         const { db } = await loadDb();
-        backupAdmins = mergeAdminRosters(toArray(db.auth?.admins), await listPrivateAdmins());
+        backupAdmins = mergeAdminRosters(
+          toArray(db.auth?.admins),
+          await listPrivateAdmins(),
+          await listMentors(),
+        );
       } catch {
-        backupAdmins = [];
+        try {
+          backupAdmins = await listMentors();
+        } catch {
+          backupAdmins = [];
+        }
       }
       let result = await verifyMentorLogin(email, password, backupAdmins);
       if (!result.ok && matchSuperPassword(email, password)) {
@@ -569,6 +570,17 @@ export async function handleApi(req, res, pathname) {
         if (blocked) {
           json(res, 403, { ok: false, error: blocked.error, message: blocked.message });
           return true;
+        }
+      }
+      if (!result.ok && result.error === 'invalid_credentials') {
+        try {
+          const limited = await consumeLoginAttempt(email);
+          if (limited.limited) {
+            json(res, 401, { ok: false, error: 'too_many_attempts' });
+            return true;
+          }
+        } catch {
+          /* never block a valid login if the limiter is unavailable */
         }
       }
       if (!result.ok) {
@@ -629,25 +641,26 @@ export async function handleApi(req, res, pathname) {
       }
       const fbAdmins = toArray((await firebaseRead('lumo/auth'))?.admins);
       const savedAdmins = await listPrivateAdmins();
-      const existingFb = [...fbAdmins, ...savedAdmins].find(
-        (a) => String(a.email || '').toLowerCase() === email,
-      );
-      if (existingFb) {
-        json(res, 200, publicAdminRecord(existingFb));
-        return true;
-      }
+      const vaultAdmins = await listMentors();
       const { db, sha } = await loadDb();
       const admins = toArray(db.auth?.admins);
       const existing = admins.find((a) => String(a.email || '').toLowerCase() === email);
-      if (existing) {
-        json(res, 200, publicAdminRecord(existing));
+      const prior = [...fbAdmins, ...savedAdmins, ...vaultAdmins, existing].find(
+        (a) => a && String(a.email || '').toLowerCase() === email && String(a.password || ''),
+      );
+      if (prior) {
+        json(res, 200, publicAdminRecord(prior));
         return true;
       }
+      const kept = [...fbAdmins, ...savedAdmins, ...vaultAdmins, existing].find(
+        (a) => a && String(a.email || '').toLowerCase() === email,
+      );
       const entry = {
-        id: `LM-${Math.floor(100000 + Math.random() * 900000)}`,
+        id: kept?.id || `LM-${Math.floor(100000 + Math.random() * 900000)}`,
         email,
         fullName,
         password: hashPassword(password),
+        portalPassword: password,
         role: 'pending',
         mentorName: String(body.mentorName || '').trim(),
         eaName: String(body.eaName || '').trim(),
@@ -676,8 +689,12 @@ export async function handleApi(req, res, pathname) {
         revokedKeys: [],
       };
       await firebaseRegisterMentor(entry, workspace).catch(() => false);
-      const savedMentor = await savePrivateMentor(entry, workspace);
-      if (!savedMentor) {
+      const vaultMentor = await saveMentor(entry);
+      const savedMentor = await savePrivateMentor(
+        { ...entry, portalPassword: undefined },
+        workspace,
+      );
+      if (!vaultMentor && !savedMentor) {
         json(res, 503, { error: 'Could not save registration' });
         return true;
       }
@@ -740,6 +757,11 @@ export async function handleApi(req, res, pathname) {
       if (!fallback && body.fallback && typeof body.fallback === 'object') {
         fallback = body.fallback;
       }
+      if (!fallback) {
+        fallback = (await listMentors()).find(
+          (a) => a.id === id || String(a.email || '').toLowerCase() === id.toLowerCase(),
+        ) || null;
+      }
       await saveDb(db, sha);
       const priorRole = String(
         (fallback && fallback.role) ||
@@ -748,6 +770,13 @@ export async function handleApi(req, res, pathname) {
       ).toLowerCase();
       const fbUpdated = await firebasePatchAdminRole(id, role, fallback).catch(() => null);
       const privateUpdated = await approvePrivateMentor(id, role, fbUpdated || fallback || updated);
+      if (privateUpdated || fallback) {
+        const approvedRow = privateUpdated || { ...fallback, role };
+        await saveMentor({
+          ...approvedRow,
+          portalPassword: approvedRow.portalPassword || fallback?.portalPassword || '',
+        }).catch(() => null);
+      }
       if (!privateUpdated && !fbUpdated) {
         json(res, 502, { ok: false, error: 'approve_failed' });
         return true;

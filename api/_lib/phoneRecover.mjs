@@ -495,10 +495,11 @@ export async function rememberEmailSend(key) {
 export async function mergeRecoveryPatch(patch, preloaded) {
   const config = supabaseConfig();
   if (!config.url || !config.secretKey) return null;
-  const current =
-    preloaded && typeof preloaded === 'object'
-      ? preloaded
-      : (await loadRecoveryDb()) || emptyDb();
+  let current = preloaded && typeof preloaded === 'object' ? preloaded : null;
+  if (!current) {
+    current = await loadRecoveryDb();
+    if (!current) return null;
+  }
   const next = mergeDatabases(current, prepareLicensePatch(patch));
   next.images = {};
   next.updatedAt = new Date().toISOString();

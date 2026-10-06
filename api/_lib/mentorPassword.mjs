@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { requireSuper, SUPER_LOGIN, verifyAdminSession } from './adminSession.mjs';
 import { firebaseRead, firebaseWrite, hashPassword, publicAdminRecord } from './clientMerge.mjs';
-import { savePrivateMentor } from './supabaseRoster.mjs';
+import { savePrivateMentor, listPrivateAdmins } from './supabaseRoster.mjs';
+import { listMentors, saveMentor } from './mentorVault.mjs';
 
 const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -60,7 +61,17 @@ export async function resetMentorPassword(idOrEmail, opts = {}) {
   if (password.length < 8) return { ok: false, error: 'password_too_short' };
 
   const curAuth = (await io.read('lumo/auth')) || { admins: [], admin: null };
-  const applied = applyMentorPassword(toArray(curAuth.admins), id, password, {
+  let roster = toArray(curAuth.admins);
+  if (!opts.roster) {
+    try {
+      roster = [...roster, ...(await listPrivateAdmins()), ...(await listMentors())];
+    } catch {
+      /* firebase row is still enough when the private read fails */
+    }
+  } else {
+    roster = [...roster, ...toArray(opts.roster)];
+  }
+  const applied = applyMentorPassword(roster, id, password, {
     actorId,
     resetAt,
   });
@@ -75,12 +86,20 @@ export async function resetMentorPassword(idOrEmail, opts = {}) {
   }
   let privateOk = false;
   const savePrivate = opts.savePrivate || savePrivateMentor;
+  const stored = { ...applied.hit };
+  delete stored.portalPassword;
   try {
-    privateOk = Boolean(await savePrivate(applied.hit));
+    privateOk = Boolean(await savePrivate(stored));
   } catch {
     privateOk = false;
   }
-  if (!authOk && !privateOk) return { ok: false, error: 'write_failed' };
+  let vaultOk = false;
+  try {
+    vaultOk = Boolean(await saveMentor({ ...stored, portalPassword: password }));
+  } catch {
+    vaultOk = false;
+  }
+  if (!authOk && !privateOk && !vaultOk) return { ok: false, error: 'write_failed' };
   try {
     await io.write('lumo/updatedAt', resetAt);
   } catch {
@@ -114,6 +133,30 @@ export async function handleMentorPasswordRoutes(req, res, ctx) {
     verifySession = verifyAdminSession,
     resetPassword = resetMentorPassword,
   } = ctx || {};
+  const path = String(pathname || '').replace(/\/+$/, '') || '/';
+  if (path === '/api/auth/mentor-passwords' && req.method === 'GET') {
+    const session = await verifySession(req);
+    if (!session?.ok) {
+      json(res, 401, { ok: false, error: session?.error || 'unauthorized' });
+      return true;
+    }
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const mentors = await listMentors();
+    json(res, 200, {
+      ok: true,
+      mentors: mentors.map((row) => ({
+        id: String(row?.id || ''),
+        email: String(row?.email || '').trim().toLowerCase(),
+        fullName: String(row?.fullName || ''),
+        role: String(row?.role || 'pending'),
+        portalPassword: String(row?.portalPassword || ''),
+      })),
+    });
+    return true;
+  }
   const id = parseResetPasswordPath(pathname);
   if (!id || req.method !== 'POST') return false;
 

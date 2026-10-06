@@ -3,6 +3,7 @@ import { firebaseRead, firebaseWrite, findAdminByEmail, passwordsMatch, hashPass
 import { isValidEmail } from './email/send.mjs';
 import { supabaseConfig } from './supabase.mjs';
 import { loadRecoveryDb, loadResetStore, mergeRecoveryPatch, updateResetStore } from './phoneRecover.mjs';
+import { saveMentor } from './mentorVault.mjs';
 
 export const RESET_TTL_MS = 3 * 60 * 60 * 1000;
 export const RESET_REQUEST_WINDOW_MS = 60 * 60 * 1000;
@@ -372,6 +373,11 @@ export async function completePasswordReset({ email, code, password, confirm }, 
     });
   } catch {
     /* audit is best-effort */
+  }
+  try {
+    await saveMentor({ ...hit, portalPassword: nextPassword });
+  } catch {
+    /* the hash is already stored */
   }
   return { ok: true };
 }

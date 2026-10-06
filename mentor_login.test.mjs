@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  hashPassword,
   mergeAdminsLive,
   passwordsMatch,
+  publicAdminRecord,
   verifyMentorLogin,
 } from './api/_lib/clientMerge.mjs';
+import { upsertMentor } from './api/_lib/mentorVault.mjs';
 
 function createIo(admins) {
   const store = { 'lumo/auth': { admins, admin: null } };
@@ -65,4 +68,31 @@ test('wiped Firebase password without a backup asks for a Super Admin reset', as
   assert.equal(result.ok, false);
   assert.equal(result.error, 'password_reset_required');
   assert.equal(passwordsMatch('', 'anything'), false);
+});
+
+test('a new signup with the right password is waiting for approval, not a wrong password', async () => {
+  const hash = hashPassword('fresh-pass');
+  const io = createIo([]);
+  const pending = await verifyMentorLogin(
+    'newmentor@example.com',
+    'fresh-pass',
+    [{ id: 'LM-22', email: 'newmentor@example.com', role: 'pending', password: hash, portalPassword: 'fresh-pass' }],
+    io,
+  );
+  assert.equal(pending.ok, false);
+  assert.equal(pending.error, 'pending');
+  assert.equal(pending.admin.portalPassword, undefined);
+  assert.equal(pending.admin.password, undefined);
+  const missing = await verifyMentorLogin('nobody@example.com', 'fresh-pass', [], io);
+  assert.equal(missing.error, 'not_registered');
+  const stored = upsertMentor({ mentors: {}, version: 0 }, {
+    email: 'newmentor@example.com',
+    password: hash,
+    portalPassword: 'fresh-pass',
+    role: 'pending',
+  });
+  const again = upsertMentor(stored, { email: 'newmentor@example.com', role: 'admin' });
+  assert.equal(again.mentors['newmentor@example.com'].portalPassword, 'fresh-pass');
+  assert.equal(again.mentors['newmentor@example.com'].role, 'admin');
+  assert.equal(publicAdminRecord(again.mentors['newmentor@example.com']).portalPassword, undefined);
 });
