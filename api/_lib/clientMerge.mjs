@@ -5,11 +5,6 @@ import {
   splitNameFromEmail,
 } from './registrationEmail.mjs';
 
-const FIREBASE_DB_URL = (
-  process.env.FIREBASE_DATABASE_URL ||
-  process.env.VITE_FIREBASE_DATABASE_URL ||
-  'https://lumoedge-61c02-default-rtdb.firebaseio.com'
-).replace(/\/$/, '');
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -109,27 +104,51 @@ export function mergeClients(existing = [], incoming = []) {
   return [...byEmail.values()];
 }
 
+/** Supabase is the database. These names stay so older callers do not contact Firebase. */
 export async function firebaseRead(path) {
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/${path}.json`, { cache: 'no-store' });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  const { readStoredPath } = await import('./supabasePaths.mjs');
+  return readStoredPath(path);
 }
 
 export async function firebaseWrite(path, value) {
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/${path}.json`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(value),
-    });
-    return res.ok;
-  } catch {
-    return false;
+  const { writeStoredPath } = await import('./supabasePaths.mjs');
+  return writeStoredPath(path, value);
+}
+
+/** Never let a stale pending push wipe a saved license key. */
+export function mergeSessionPreferLicense(prev, incoming) {
+  if (!incoming || typeof incoming !== 'object') return prev || incoming;
+  if (!prev || typeof prev !== 'object') return incoming;
+  const prevBot = prev.bot && typeof prev.bot === 'object' ? prev.bot : {};
+  const nextBot = incoming.bot && typeof incoming.bot === 'object' ? incoming.bot : {};
+  const incomingKey = String(nextBot.licenseKey || '').trim();
+  const prevKey = String(prevBot.licenseKey || '').trim();
+  const intentionalClear =
+    nextBot.licenseKey !== undefined &&
+    !incomingKey &&
+    String(incoming.accessStatus || '') !== 'licensed';
+  const licenseKey = intentionalClear ? '' : incomingKey || prevKey;
+  const accessStatus = licenseKey
+    ? 'licensed'
+    : intentionalClear
+      ? incoming.accessStatus || 'pending'
+      : incoming.accessStatus || prev.accessStatus || 'pending';
+  const merged = {
+    ...prev,
+    ...incoming,
+    accessStatus,
+    bot: {
+      ...prevBot,
+      ...nextBot,
+      licenseKey,
+    },
+  };
+  if (incoming.device == null) {
+    if (prev.device) merged.device = prev.device;
+  } else {
+    merged.device = preferSessionDevice(prev.device, incoming.device);
   }
+  return merged;
 }
 
 /** Live Firebase registrations merged with durable GitHub backup — never drop pending. */

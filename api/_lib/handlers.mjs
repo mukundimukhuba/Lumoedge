@@ -2,15 +2,9 @@ import { emptyDb, hasDurableBackend, loadDb, saveDb } from './store.mjs';
 import {
   adminRoleRank,
   firebasePatchAdminRole,
-  firebaseClearSessionDevice,
-  firebasePatchClientById,
-  firebasePostClientEntry,
-  preferSessionDevice,
-  sessionWithoutDevice,
   firebaseRegisterMentor,
   firebaseRead,
   firebaseWrite,
-  loadMergedClients,
   mergeAdminsLive,
   mergeClients,
   normalizeAdminRole,
@@ -46,6 +40,7 @@ import {
   saveSubscriptionPatch,
   subscriptionEntryFromBody,
 } from './subscriptionVault.mjs';
+import { clearPhoneDevice, getPhoneSession, putPhoneSession } from './phoneSessions.mjs';
 import { handleCalendarRoutes } from './calendarRoutes.mjs';
 import { handleEmailRoutes } from './email/routes.mjs';
 import { handleWebsiteRoutes } from './websiteRoutes.mjs';
@@ -114,43 +109,6 @@ async function readBody(req) {
   } catch {
     return {};
   }
-}
-
-/** Never let a stale pending push wipe a saved license key. */
-function mergeSessionPreferLicense(prev, incoming) {
-  if (!incoming || typeof incoming !== 'object') return prev || incoming;
-  if (!prev || typeof prev !== 'object') return incoming;
-  const prevBot = prev.bot && typeof prev.bot === 'object' ? prev.bot : {};
-  const nextBot = incoming.bot && typeof incoming.bot === 'object' ? incoming.bot : {};
-  const incomingKey = String(nextBot.licenseKey || '').trim();
-  const prevKey = String(prevBot.licenseKey || '').trim();
-  // deleteBot clears license + demotes access — allow empty key when not licensed.
-  const intentionalClear =
-    nextBot.licenseKey !== undefined &&
-    !incomingKey &&
-    String(incoming.accessStatus || '') !== 'licensed';
-  const licenseKey = intentionalClear ? '' : incomingKey || prevKey;
-  const accessStatus = licenseKey
-    ? 'licensed'
-    : intentionalClear
-      ? incoming.accessStatus || 'pending'
-      : incoming.accessStatus || prev.accessStatus || 'pending';
-  const merged = {
-    ...prev,
-    ...incoming,
-    accessStatus,
-    bot: {
-      ...prevBot,
-      ...nextBot,
-      licenseKey,
-    },
-  };
-  if (incoming.device == null) {
-    if (prev.device) merged.device = prev.device;
-  } else {
-    merged.device = preferSessionDevice(prev.device, incoming.device);
-  }
-  return merged;
 }
 
 function mirrorClientToSuper(db, entry) {
@@ -357,7 +315,7 @@ export async function handleApi(req, res, pathname) {
         return true;
       }
       const bundle = await loadMentorBundle(adminId, {
-        read: (path) => withTimeout(firebaseRead(path), 8000),
+        read: (path) => withTimeout(firebaseRead(path), 20000),
       });
       json(res, 200, { ok: true, adminId, ...bundle });
       return true;
@@ -388,10 +346,9 @@ export async function handleApi(req, res, pathname) {
     }
 
     if (pathname === '/api/clients' && req.method === 'GET') {
-      const merged = await loadMergedClients(loadDb);
       const saved = await listPrivateClients();
       const fast = await listSubscriptions();
-      json(res, 200, combineSubscriptions(merged, saved, fast).map(visibleClient));
+      json(res, 200, combineSubscriptions(saved, fast).map(visibleClient));
       return true;
     }
 
@@ -447,21 +404,9 @@ export async function handleApi(req, res, pathname) {
           notifyApprovedSubscription(storedClient),
           new Promise((resolve) => setTimeout(resolve, 2500)),
         ]);
-        void withTimeout(firebaseClearSessionDevice(storedClient.email), 1200);
+        void clearPhoneDevice(storedClient.email);
       }
       void withTimeout(savePrivateClient(storedClient), 20000);
-      void withTimeout(
-        firebasePostClientEntry({
-          email: storedClient.email,
-          firstName: storedClient.firstName,
-          lastName: storedClient.lastName,
-          status: storedClient.status,
-          paymentClaimed: storedClient.paymentClaimed,
-          paymentClaimedAt: storedClient.paymentClaimedAt,
-          paymentVerified: false,
-        }),
-        2500,
-      );
       const mentorId = String(body.mentorId || req.headers['x-lumo-admin-id'] || '').trim();
       if (mentorId) {
         void withTimeout(markMentorActivitySatisfied(mentorId, 'client'), 2000);
@@ -490,8 +435,8 @@ export async function handleApi(req, res, pathname) {
       if (!storedClient) {
         try {
           const merged = combineSubscriptions(
-            await loadMergedClients(loadDb),
             await listPrivateClients(),
+            await listSubscriptions(),
           );
           const prev = findSubscription(merged, id);
           if (prev) {
@@ -524,19 +469,8 @@ export async function handleApi(req, res, pathname) {
           new Promise((resolve) => setTimeout(resolve, 2500)),
         ]);
       }
-      void withTimeout(firebasePatchClientById(id, patch), 1200);
-      void (async () => {
-        try {
-          const { db, sha } = await loadDb();
-          db.clients = mergeClients(db.clients || [], [approvedClient]);
-          mirrorClientToSuper(db, approvedClient);
-          await saveDb(db, sha);
-        } catch {
-          /* private row is already stored */
-        }
-      })();
       if (String(approvedClient.status || '').toLowerCase() === 'approved') {
-        void firebaseClearSessionDevice(approvedClient.email).catch(() => undefined);
+        void clearPhoneDevice(approvedClient.email);
       }
       if (String(approvedClient.status || '').toLowerCase() === 'rejected') {
         void tryReverseCommission({
@@ -861,45 +795,33 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { ok: false, error: 'Enter the client email.' });
         return true;
       }
-      const cleared = await firebaseClearSessionDevice(email);
-      let previousLabel = cleared.previousLabel || '';
-      try {
-        const { db, sha } = await loadDb();
-        const prev = db.sessions?.[email];
-        if (prev && typeof prev === 'object') {
-          const released = sessionWithoutDevice(prev);
-          previousLabel = previousLabel || released.previousLabel;
-          db.sessions = { ...(db.sessions || {}), [email]: released.session };
-          await saveDb(db, sha);
-        }
-      } catch {
-        /* Firebase is the lock the phone reads. The backup copy can fail. */
+      const cleared = await clearPhoneDevice(email);
+      if (!cleared.ok) {
+        json(res, 503, { ok: false, error: 'Could not unlink that phone.' });
+        return true;
       }
       json(res, 200, {
         ok: true,
         email,
-        previousLabel,
+        previousLabel: cleared.previousLabel || '',
       });
       return true;
     }
 
     if (pathname.startsWith('/api/sessions/') && req.method === 'GET') {
       const email = decodeURIComponent(pathname.replace('/api/sessions/', '')).toLowerCase();
-      const { db } = await loadDb();
-      json(res, 200, db.sessions?.[email] ?? null);
+      json(res, 200, (await getPhoneSession(email)) ?? null);
       return true;
     }
 
     if (pathname.startsWith('/api/sessions/') && req.method === 'PUT') {
       const email = decodeURIComponent(pathname.replace('/api/sessions/', '')).toLowerCase();
       const body = await readBody(req);
-      const { db, sha } = await loadDb();
-      const prev = db.sessions?.[email];
-      db.sessions = {
-        ...(db.sessions || {}),
-        [email]: mergeSessionPreferLicense(prev, body),
-      };
-      await saveDb(db, sha);
+      const saved = await putPhoneSession(email, body);
+      if (!saved) {
+        json(res, 503, { ok: false, error: 'Could not save session' });
+        return true;
+      }
       json(res, 200, { ok: true });
       return true;
     }
