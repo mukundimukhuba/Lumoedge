@@ -52,13 +52,14 @@ export function listMentorRows(store) {
 export async function loadMentorStore() {
   const config = supabaseConfig();
   if (!config.url || !config.secretKey) return emptyMentorStore();
-  const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
-    headers: headers(config.secretKey),
-    cache: 'no-store',
-  });
-  if (response.status === 404) return emptyMentorStore();
-  if (!response.ok) return null;
   try {
+    const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
+      headers: headers(config.secretKey),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(12000),
+    });
+    if (response.status === 404) return emptyMentorStore();
+    if (!response.ok) return emptyMentorStore();
     const body = await response.json();
     return {
       mentors: body?.mentors && typeof body.mentors === 'object' && !Array.isArray(body.mentors) ? body.mentors : {},
@@ -70,17 +71,8 @@ export async function loadMentorStore() {
 }
 
 async function putMentorStore(store) {
-  const config = supabaseConfig();
-  if (!config.url || !config.secretKey) return false;
-  const response = await fetch(`${config.url}/storage/v1/object/${BUCKET}/${OBJECT_PATH}`, {
-    method: 'PUT',
-    headers: headers(config.secretKey, {
-      'Content-Type': 'application/json',
-      'x-upsert': 'true',
-    }),
-    body: JSON.stringify(store),
-  });
-  return response.ok;
+  const { uploadPrivateJson } = await import('./supabase.mjs');
+  return uploadPrivateJson(OBJECT_PATH, store);
 }
 
 async function updateMentorStore(mutate) {
@@ -91,6 +83,7 @@ async function updateMentorStore(mutate) {
     if (!(await putMentorStore(next))) continue;
     const check = await loadMentorStore();
     if (check && Number(check.version) === Number(next.version)) return check;
+    return next;
   }
   return null;
 }

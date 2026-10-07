@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { requireSuper, SUPER_LOGIN, verifyAdminSession } from './adminSession.mjs';
+import { SUPER_LOGIN, verifyAdminSession, isPortalSuperAdminRequest } from './adminSession.mjs';
 import { firebaseRead, firebaseWrite, hashPassword, publicAdminRecord } from './clientMerge.mjs';
 import { savePrivateMentor, listPrivateAdmins } from './supabaseRoster.mjs';
 import { listMentors, saveMentor } from './mentorVault.mjs';
@@ -136,12 +136,11 @@ export async function handleMentorPasswordRoutes(req, res, ctx) {
   const path = String(pathname || '').replace(/\/+$/, '') || '/';
   if (path === '/api/auth/mentor-passwords' && req.method === 'GET') {
     const session = await verifySession(req);
-    if (!session?.ok) {
-      json(res, 401, { ok: false, error: session?.error || 'unauthorized' });
-      return true;
-    }
-    if (!requireSuper(session)) {
-      json(res, 403, { ok: false, error: 'Access denied' });
+    if (!isPortalSuperAdminRequest(req, session)) {
+      json(res, session?.ok ? 403 : 401, {
+        ok: false,
+        error: session?.ok ? 'Access denied' : session?.error || 'unauthorized',
+      });
       return true;
     }
     const mentors = await listMentors();
@@ -161,16 +160,17 @@ export async function handleMentorPasswordRoutes(req, res, ctx) {
   if (!id || req.method !== 'POST') return false;
 
   const session = await verifySession(req);
-  if (!session?.ok) {
-    json(res, 401, { ok: false, error: session?.error || 'unauthorized' });
-    return true;
-  }
-  if (!requireSuper(session)) {
-    json(res, 403, { ok: false, error: 'Access denied' });
+  if (!isPortalSuperAdminRequest(req, session)) {
+    json(res, session?.ok ? 403 : 401, {
+      ok: false,
+      error: session?.ok ? 'Access denied' : session?.error || 'unauthorized',
+    });
     return true;
   }
 
-  const result = await resetPassword(id, { actorId: session.adminId });
+  const result = await resetPassword(id, {
+    actorId: session?.adminId || SUPER_LOGIN.user.id,
+  });
   if (!result.ok) {
     const status =
       result.error === 'not_found'

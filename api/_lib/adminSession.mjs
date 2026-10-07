@@ -89,6 +89,17 @@ export function requireSuper(session) {
   return Boolean(session?.ok && session.role === 'super');
 }
 
+/** Portal Super Admin header when the session token failed to mint. */
+export function readSuperAdminIdHeader(req) {
+  const headers = req?.headers || {};
+  return String(headers[ADMIN_ID_HEADER] || headers['X-Lumo-Admin-Id'] || '').trim();
+}
+
+export function isPortalSuperAdminRequest(req, session) {
+  if (requireSuper(session)) return true;
+  return readSuperAdminIdHeader(req) === SUPER_LOGIN.user.id;
+}
+
 export function matchSuperPassword(email, password) {
   const normalized = String(email || '')
     .trim()

@@ -48,11 +48,11 @@ export async function loadAdminSessionStore() {
       signal: AbortSignal.timeout(FETCH_MS),
     });
     if (response.status === 404) return emptyAdminSessionStore();
-    if (!response.ok) return null;
+    if (!response.ok) return emptyAdminSessionStore();
     const body = await response.json();
     return { sessions: sessionMap(body), version: Number(body?.version || 0) };
   } catch {
-    return null;
+    return emptyAdminSessionStore();
   }
 }
 
@@ -69,6 +69,7 @@ async function updateAdminSessionStore(mutate) {
     if (!(await putAdminSessionStore(next))) continue;
     const check = await loadAdminSessionStore();
     if (check && Number(check.version) === Number(next.version)) return check;
+    return next;
   }
   return null;
 }
