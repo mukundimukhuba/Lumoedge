@@ -519,22 +519,28 @@ export async function handleApi(req, res, pathname) {
         json(res, 400, { error: 'email and password required' });
         return true;
       }
+      // Mentors.json is the fast password store. Skip GitHub and only pull the
+      // full private roster if that small file does not have this mentor yet.
       let backupAdmins = [];
       try {
-        const { db } = await loadDb();
-        backupAdmins = mergeAdminRosters(
-          toArray(db.auth?.admins),
-          await listPrivateAdmins(),
-          await listMentors(),
-        );
+        backupAdmins = toArray(await listMentors());
       } catch {
-        try {
-          backupAdmins = await listMentors();
-        } catch {
-          backupAdmins = [];
-        }
+        backupAdmins = [];
       }
       let result = await verifyMentorLogin(email, password, backupAdmins);
+      if (
+        !result.ok &&
+        (result.error === 'not_registered' ||
+          result.error === 'invalid_credentials' ||
+          result.error === 'password_reset_required')
+      ) {
+        try {
+          backupAdmins = mergeAdminRosters(backupAdmins, await listPrivateAdmins());
+          result = await verifyMentorLogin(email, password, backupAdmins);
+        } catch {
+          /* keep the first result */
+        }
+      }
       if (!result.ok && matchSuperPassword(email, password)) {
         result = { ok: true, admin: { ...SUPER_LOGIN.user } };
       }
@@ -565,7 +571,15 @@ export async function handleApi(req, res, pathname) {
         });
         return true;
       }
-      const minted = await mintAdminSession(result.admin);
+      let minted = null;
+      try {
+        minted = await Promise.race([
+          mintAdminSession(result.admin),
+          new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+        ]);
+      } catch {
+        minted = null;
+      }
       json(res, 200, {
         ok: true,
         admin: result.admin,
