@@ -47,6 +47,9 @@ for name in ("index.html","lumo-logo.png","lumo-logo-192.png","lumo-logo-email.p
 if os.path.isdir(os.path.join(ROOT,"assets")): walk_add(os.path.join(ROOT,"assets"),"assets")
 if os.path.isdir(os.path.join(ROOT,"api")): walk_add(os.path.join(ROOT,"api"),"api")
 if os.path.isdir(os.path.join(ROOT,"downloads")): walk_add(os.path.join(ROOT,"downloads"),"downloads")
+for apk in ("Lumo-Edge.apk",):
+    lp=os.path.join(ROOT,apk)
+    if os.path.isfile(lp): add(lp, apk)
 for extra in ("special.html","admin-login.html","cape-pulse.html"):
     lp=os.path.join(ROOT,extra)
     if os.path.isfile(lp): add(lp, extra)
