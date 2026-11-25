@@ -805,29 +805,28 @@ export async function handleApi(req, res, pathname) {
         ...approvalPatch(actorId, now),
         paymentClaimedAt: body?.paymentClaimedAt || now,
       };
+      // Fail closed: claim only reads subscriptions.json — private/GitHub-only
+      // success previously returned approved while Activate still saw unpaid.
       let storedClient =
         (await withTimeout(saveSubscriptionPatch(email, patch), 12000)) ||
         (await withTimeout(saveSubscriptionPatch(String(body?.id || ''), patch), 8000));
       if (!storedClient) {
         storedClient = await withTimeout(
-          persistClientBestEffort(subscriptionEntryFromBody(patch, now)),
+          saveSubscription(subscriptionEntryFromBody(patch, now)),
           12000,
         );
       }
-      if (!storedClient) {
-        storedClient = await withTimeout(patchPrivateClient(email, patch), 10000);
-      }
-      if (!storedClient) {
+      if (!storedClient || !canActivateLicense(storedClient)) {
         auditAsync('subscription.approve_failed', {
           email,
           actorId,
-          error: 'Could not save approval',
+          error: 'subscription_vault_write_failed',
         });
         json(res, 503, {
           ok: false,
           error: 'Could not save approval',
           message:
-            'Approval did not save. Check connection and retry — retries are safe and will not duplicate.',
+            'Payment confirmation did not save to the subscription store. Check connection and retry — retries are safe and will not duplicate.',
         });
         return true;
       }
@@ -848,7 +847,6 @@ export async function handleApi(req, res, pathname) {
         subscription: publicSubscriptionView(storedClient),
       });
       void withTimeout(savePrivateClient(storedClient), 20000);
-      void withTimeout(saveSubscription(storedClient), 20000);
       void clearPhoneDevice(email);
       void withTimeout(
         notifyApprovedSubscription(storedClient).catch(() => null),
@@ -1026,19 +1024,25 @@ export async function handleApi(req, res, pathname) {
         }
         let privateOffline = false;
         result = await verifyMentorLogin(email, password, backupAdmins);
-        // Heavy private roster only when vault is offline, mentor missing/pending,
-        // or vault row has no credentials at all. Never re-fetch when the vault
-        // already has a password/portalPassword (wrong password → invalid_credentials).
+        // Always fall through on credential mismatch — mentors.json can hold a
+        // stale hash while recovery/auth or private roster has the reset password.
+        // (Skipping private roster on invalid_credentials caused phantom lockouts.)
         const vaultRow = findAdminByEmail(backupAdmins, email);
         const needsPrivateRoster =
           vaultOffline ||
           result.error === 'pending' ||
           result.error === 'not_registered' ||
+          result.error === 'invalid_credentials' ||
           (result.error === 'password_reset_required' && !hasMentorCredentials(vaultRow));
         if (!result.ok && needsPrivateRoster) {
           try {
             const privateAdmins = await withTimeout(listPrivateAdmins(), 8000);
-            if (vaultOffline || result.error === 'pending' || result.error === 'not_registered') {
+            if (
+              vaultOffline ||
+              result.error === 'pending' ||
+              result.error === 'not_registered' ||
+              result.error === 'invalid_credentials'
+            ) {
               const health = await withTimeout(privateStorageHealth(), 5000);
               privateOffline = Boolean(health?.offline) || privateAdmins == null;
             }

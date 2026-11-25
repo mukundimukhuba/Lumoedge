@@ -399,23 +399,35 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
     if (email) {
       let paidOk = false;
       let subStatus = 'pending_payment';
+      let storeOffline = false;
       try {
         const { findSubscription } = await import('./supabaseRoster.mjs');
-        const { listSubscriptions } = await import('./subscriptionVault.mjs');
+        const { getSubscription } = await import('./subscriptionVault.mjs');
         const { canActivateLicense, resolveSubscriptionStatus } = await import(
           './subscriptionStatus.mjs'
         );
-        const merged = await Promise.race([
-          listSubscriptions().catch(() => []),
-          new Promise((resolve) => setTimeout(() => resolve([]), 8000)),
-        ]);
-        const client = findSubscription(merged, email);
-        subStatus = resolveSubscriptionStatus(client);
-        paidOk = canActivateLicense(client);
+        // Prefer single-email read — never treat a storage timeout as "unpaid".
+        let client = null;
+        try {
+          client = await Promise.race([
+            getSubscription(email),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(Object.assign(new Error('sub_timeout'), { offline: true })), 8000),
+            ),
+          ]);
+        } catch (err) {
+          if (err?.offline || err?.code === 'unavailable' || err?.message === 'sub_timeout') {
+            storeOffline = true;
+          }
+        }
+        if (!storeOffline) {
+          subStatus = resolveSubscriptionStatus(client);
+          paidOk = canActivateLicense(client);
+        }
       } catch {
-        paidOk = false;
+        storeOffline = true;
       }
-      if (!paidOk) {
+      if (!paidOk && !storeOffline) {
         try {
           const { accessPath } = await import('./specialAccess.mjs');
           const { firebaseRead } = await import('./clientMerge.mjs');
@@ -432,6 +444,22 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
         } catch {
           /* ignore */
         }
+      }
+      if (storeOffline && !paidOk) {
+        const { auditAsync } = await import('./auditLog.mjs');
+        auditAsync('license.claim_blocked', {
+          email,
+          keyFingerprint: keyFingerprint(key),
+          reason: 'subscription_store_offline',
+        });
+        json(res, 503, {
+          ok: false,
+          error: 'unavailable',
+          reason: 'subscription_store_offline',
+          message:
+            'Payment status could not be verified right now. Your key was not rejected — try Activate again shortly.',
+        });
+        return true;
       }
       if (!paidOk) {
         const { auditAsync } = await import('./auditLog.mjs');
