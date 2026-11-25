@@ -1,0 +1,44 @@
+{
+  "appId": "com.lumoedge.app",
+  "appName": "Lumo Edge",
+  "webDir": "www",
+  "server": {
+    "url": "https://lumoedge.com",
+    "hostname": "lumoedge.com",
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": [
+      "lumoedge.com",
+      "*.lumoedge.com",
+      "lumoedge.vercel.app",
+      "*.vercel.app",
+      "*.firebaseio.com",
+      "*.googleapis.com",
+      "*.firebaseapp.com",
+      "*.web.app",
+      "*.force.com",
+      "*.cloudfunctions.net",
+      "*.supabase.co"
+    ]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#04060c"
+  },
+  "ios": {
+    "backgroundColor": "#04060c",
+    "contentInset": "automatic",
+    "allowsLinkPreview": false
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "backgroundColor": "#04060c",
+      "showSpinner": false
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#04060c"
+    }
+  }
+}
