@@ -12,15 +12,6 @@ function queryOf(req) {
   }
 }
 
-async function sessionOrReject(req, res, json) {
-  const session = await verifyAdminSession(req, { read: firebaseRead, write: firebaseWrite });
-  if (!session.ok) {
-    json(res, 401, { ok: false, error: session.error || 'unauthorized' });
-    return null;
-  }
-  return session;
-}
-
 export function mentorGuard(session, requestedMentorId) {
   const requested = String(requestedMentorId || '').trim();
   if (!requested) return { ok: true, mentorId: session.adminId };
@@ -29,7 +20,14 @@ export function mentorGuard(session, requestedMentorId) {
   return { ok: true, mentorId: session.adminId };
 }
 
-export async function handleCommissionRoutes(req, res, { json, readBody, pathname }) {
+export async function handleCommissionRoutes(req, res, ctx) {
+  const {
+    json,
+    readBody,
+    pathname,
+    engine = defaultEngine,
+    verifySession = verifyAdminSession,
+  } = ctx || {};
   const path = String(pathname || '').replace(/\/+$/, '') || '/';
   if (!path.startsWith('/api/commissions') && path !== '/api/auth/session') return false;
 
@@ -37,8 +35,11 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
     return false;
   }
 
-  const session = await sessionOrReject(req, res, json);
-  if (!session) return true;
+  const session = await verifySession(req, { read: firebaseRead, write: firebaseWrite });
+  if (!session?.ok) {
+    json(res, 401, { ok: false, error: session?.error || 'unauthorized' });
+    return true;
+  }
 
   if (path === '/api/commissions/me' && req.method === 'GET') {
     const q = queryOf(req);
@@ -47,8 +48,21 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       json(res, 403, { ok: false, error: guard.error });
       return true;
     }
-    const summary = await defaultEngine.getMentorSummary(guard.mentorId);
-    json(res, 200, { ok: true, ...summary });
+    const summary = await engine.getMentorSummary(guard.mentorId);
+    json(res, 200, {
+      ok: true,
+      ...summary,
+      role: session.role,
+      canManageAll: session.role === 'super',
+      viewerId: session.adminId,
+    });
+    return true;
+  }
+
+  if (path === '/api/commissions/join' && req.method === 'POST') {
+    const body = await readBody(req);
+    const result = await engine.joinProgram(session, body || {});
+    json(res, result.ok ? 201 : 400, result);
     return true;
   }
 
@@ -59,7 +73,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       json(res, 403, { ok: false, error: guard.error });
       return true;
     }
-    const result = await defaultEngine.savePayoutDetails(guard.mentorId, body || {});
+    const result = await engine.savePayoutDetails(guard.mentorId, body || {});
     json(res, result.ok ? 200 : 400, result);
     return true;
   }
@@ -71,13 +85,13 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       json(res, 403, { ok: false, error: guard.error });
       return true;
     }
-    const result = await defaultEngine.requestPayout(guard.mentorId);
+    const result = await engine.requestPayout(guard.mentorId);
     json(res, result.ok ? 201 : 400, result);
     return true;
   }
 
   if (path === '/api/commissions/settings' && req.method === 'GET') {
-    const settings = await defaultEngine.ensureSettings();
+    const settings = await engine.ensureSettings();
     if (session.role !== 'super') {
       json(res, 200, {
         ok: true,
@@ -100,7 +114,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       return true;
     }
     const body = await readBody(req);
-    const settings = await defaultEngine.writeSettings(body || {}, session.adminId);
+    const settings = await engine.writeSettings(body || {}, session.adminId);
     json(res, 200, { ok: true, settings });
     return true;
   }
@@ -111,14 +125,109 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       return true;
     }
     const q = queryOf(req);
-    const overview = await defaultEngine.getAdminOverview({
+    const overview = await engine.getAdminOverview({
       mentorQuery: q.get('mentor') || q.get('q') || '',
       referenceQuery: q.get('reference') || q.get('ref') || '',
       status: q.get('status') || '',
       from: q.get('from') || '',
       to: q.get('to') || '',
+      filter: q.get('filter') || 'all',
     });
     json(res, 200, { ok: true, ...overview });
+    return true;
+  }
+
+  const profileGet = path.match(/^\/api\/commissions\/admin\/mentors\/([^/]+)$/);
+  if (profileGet && req.method === 'GET') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const mentorId = decodeURIComponent(profileGet[1]);
+    const result = await engine.getEarnerProfile(mentorId);
+    json(res, result.ok ? 200 : 404, result);
+    return true;
+  }
+
+  const applicationAction = path.match(
+    /^\/api\/commissions\/admin\/applications\/([^/]+)\/(approve|reject)$/,
+  );
+  if (applicationAction && req.method === 'POST') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const mentorId = decodeURIComponent(applicationAction[1]);
+    const action = applicationAction[2];
+    const body = await readBody(req);
+    const result = await engine.reviewApplication(mentorId, action, {
+      actorId: session.adminId,
+      reason: body?.reason,
+    });
+    json(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  const profileStatus = path.match(
+    /^\/api\/commissions\/admin\/profiles\/([^/]+)\/(activate|deactivate)$/,
+  );
+  if (profileStatus && req.method === 'POST') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const mentorId = decodeURIComponent(profileStatus[1]);
+    const action = profileStatus[2];
+    const body = await readBody(req);
+    const result = await engine.setProfileStatus(
+      mentorId,
+      action === 'activate' ? 'active' : 'inactive',
+      { actorId: session.adminId, reason: body?.reason },
+    );
+    json(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  const profileRate = path.match(/^\/api\/commissions\/admin\/profiles\/([^/]+)\/rate$/);
+  if (profileRate && req.method === 'PUT') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const mentorId = decodeURIComponent(profileRate[1]);
+    const body = await readBody(req);
+    const result = await engine.setProfileRate(mentorId, body?.rate ?? body?.commissionPerReferral, {
+      actorId: session.adminId,
+    });
+    json(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  const markPaid = path.match(/^\/api\/commissions\/admin\/commissions\/([^/]+)\/paid$/);
+  if (markPaid && req.method === 'POST') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const eventId = decodeURIComponent(markPaid[1]);
+    const result = await engine.markCommissionPaid(eventId, { actorId: session.adminId });
+    json(res, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  const editCommission = path.match(/^\/api\/commissions\/admin\/commissions\/([^/]+)$/);
+  if (editCommission && req.method === 'PUT') {
+    if (!requireSuper(session)) {
+      json(res, 403, { ok: false, error: 'Access denied' });
+      return true;
+    }
+    const eventId = decodeURIComponent(editCommission[1]);
+    const body = await readBody(req);
+    const result = await engine.updateCommissionAmount(eventId, body?.amount, {
+      actorId: session.adminId,
+      reason: body?.reason,
+    });
+    json(res, result.ok ? 200 : 400, result);
     return true;
   }
 
@@ -127,7 +236,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       json(res, 403, { ok: false, error: 'Access denied' });
       return true;
     }
-    json(res, 200, { ok: true, audit: await defaultEngine.getAudit() });
+    json(res, 200, { ok: true, audit: await engine.getAudit() });
     return true;
   }
 
@@ -137,7 +246,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       return true;
     }
     const body = await readBody(req);
-    const result = await defaultEngine.tryReverse({
+    const result = await engine.tryReverse({
       email: body?.email,
       eventId: body?.eventId || body?.commissionId,
       reason: body?.reason,
@@ -153,7 +262,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
       return true;
     }
     const body = await readBody(req);
-    const result = await defaultEngine.addAdjustment({
+    const result = await engine.addAdjustment({
       mentorId: String(body?.mentorId || '').trim(),
       amount: body?.amount,
       reason: body?.reason,
@@ -172,7 +281,7 @@ export async function handleCommissionRoutes(req, res, { json, readBody, pathnam
     const payoutId = decodeURIComponent(payoutAction[1]);
     const action = payoutAction[2];
     const body = await readBody(req);
-    const result = await defaultEngine.processPayout(payoutId, action, {
+    const result = await engine.processPayout(payoutId, action, {
       actorId: session.adminId,
       reason: body?.reason,
       notes: body?.notes || body?.adminNotes,

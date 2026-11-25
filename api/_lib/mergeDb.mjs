@@ -1,4 +1,4 @@
-import { mergeClients, pickAdminRole } from './clientMerge.mjs';
+import { keepNewerPassword, mergeClients, pickAdminRole } from './clientMerge.mjs';
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -23,8 +23,54 @@ function mergeVault(existing = [], incoming = []) {
       if (key) byKey.set(key, v);
       return;
     }
-    const merged = { ...prev, ...v };
-    if (prev.status === 'assigned' && v.status !== 'assigned') merged.status = prev.status;
+    const prevOwner = String(prev.ownerAdminId || prev.adminId || '').trim();
+    const nextOwner = String(v.ownerAdminId || v.adminId || '').trim();
+    // Never let another mentor's write clobber this license's robot persona.
+    const foreignPersona =
+      prevOwner && nextOwner && prevOwner !== nextOwner
+        ? {
+            eaName: prev.eaName,
+            mainText: prev.mainText,
+            eaImage: prev.eaImage,
+            customMedia: prev.customMedia,
+            symbols: prev.symbols,
+            eaId: prev.eaId,
+            ownerAdminId: prevOwner,
+          }
+        : null;
+    const merged = { ...prev, ...v, ...(foreignPersona || {}) };
+    const nextStatus = String(v.status || '').toLowerCase();
+    const prevStatus = String(prev.status || '').toLowerCase();
+    const incomingEmail = Object.prototype.hasOwnProperty.call(v, 'assignedEmail')
+      ? v.assignedEmail
+      : undefined;
+    // Explicit release: status active + cleared assignedEmail (license release /
+    // admin rebind). Without this, merge forever kept "assigned" and clients
+    // saw "Invalid key" / "already used" after Generate + Release.
+    const explicitRelease =
+      nextStatus === 'active' &&
+      (incomingEmail === null || incomingEmail === '' || incomingEmail === undefined) &&
+      (Object.prototype.hasOwnProperty.call(v, 'assignedEmail') ||
+        Object.prototype.hasOwnProperty.call(v, 'assignedAt') ||
+        v.__forceRelease === true);
+    const explicitReassign =
+      typeof incomingEmail === 'string' &&
+      incomingEmail.trim() &&
+      incomingEmail.trim().toLowerCase() !== String(prev.assignedEmail || '').toLowerCase();
+    if (explicitRelease) {
+      merged.status = 'active';
+      merged.assignedEmail = null;
+      merged.assignedAt = null;
+      delete merged.__forceRelease;
+    } else if (explicitReassign) {
+      merged.status = nextStatus === 'assigned' ? 'assigned' : merged.status;
+      merged.assignedEmail = String(incomingEmail).trim().toLowerCase();
+    } else if (prevStatus === 'assigned' && nextStatus !== 'assigned') {
+      // Partial publish without release fields — keep the live assignment.
+      merged.status = prev.status;
+      if (prev.assignedEmail && !merged.assignedEmail) merged.assignedEmail = prev.assignedEmail;
+      if (prev.assignedAt && !merged.assignedAt) merged.assignedAt = prev.assignedAt;
+    }
     byId.set(id, merged);
     if (key) byKey.set(key, merged);
   };
@@ -83,6 +129,32 @@ function mergeWorkspaces(existing = {}, incoming = {}) {
   return out;
 }
 
+function mergeNamedMaps(current, incoming, incomingPresent) {
+  const base = current && typeof current === 'object' && !Array.isArray(current) ? { ...current } : {};
+  if (!incomingPresent) return base;
+  const next = incoming && typeof incoming === 'object' && !Array.isArray(incoming) ? incoming : {};
+  const out = { ...base, ...next };
+  for (const [key, value] of Object.entries(out)) {
+    if (value == null) delete out[key];
+  }
+  return out;
+}
+
+function mergeCalendarField(base, patch, field) {
+  if (!Object.prototype.hasOwnProperty.call(patch, field) && !Object.prototype.hasOwnProperty.call(base, field)) {
+    return {};
+  }
+  if (field === 'economicCalendarSync') {
+    if (Object.prototype.hasOwnProperty.call(patch, field)) return patch[field];
+    return base[field] ?? null;
+  }
+  return mergeNamedMaps(
+    base[field],
+    patch[field],
+    Object.prototype.hasOwnProperty.call(patch, field),
+  );
+}
+
 function mergeAdmins(current, incoming) {
   const byEmail = new Map();
   for (const item of [...toArray(current), ...toArray(incoming)]) {
@@ -103,6 +175,7 @@ function mergeAdmins(current, incoming) {
         merged[k] = v;
       }
     }
+    keepNewerPassword(prev, item, merged);
     byEmail.set(email, merged);
   }
   return [...byEmail.values()];
@@ -128,6 +201,24 @@ export function mergeDatabases(base, patch) {
     sessions: { ...(a.sessions || {}), ...(b.sessions || {}) },
     images: { ...(a.images || {}), ...(b.images || {}) },
     revokedKeys: [...new Set([...(a.revokedKeys || []), ...(b.revokedKeys || [])])],
+    ...(a.passwordResets || Object.prototype.hasOwnProperty.call(b, 'passwordResets')
+      ? {
+          passwordResets: mergeNamedMaps(
+            a.passwordResets,
+            b.passwordResets,
+            Object.prototype.hasOwnProperty.call(b, 'passwordResets'),
+          ),
+        }
+      : {}),
+    ...(a.passwordResetLimits || Object.prototype.hasOwnProperty.call(b, 'passwordResetLimits')
+      ? {
+          passwordResetLimits: mergeNamedMaps(
+            a.passwordResetLimits,
+            b.passwordResetLimits,
+            Object.prototype.hasOwnProperty.call(b, 'passwordResetLimits'),
+          ),
+        }
+      : {}),
     scanAdmin: {
       ...(a.scanAdmin || {}),
       ...(b.scanAdmin || {}),
@@ -137,6 +228,11 @@ export function mergeDatabases(base, patch) {
         ...(b.scanAdmin?.historyClears || {}),
       },
     },
+    economicEvents: mergeCalendarField(a, b, 'economicEvents'),
+    economicSignals: mergeCalendarField(a, b, 'economicSignals'),
+    signalExecutions: mergeCalendarField(a, b, 'signalExecutions'),
+    signalExecutionLocks: mergeCalendarField(a, b, 'signalExecutionLocks'),
+    economicCalendarSync: mergeCalendarField(a, b, 'economicCalendarSync'),
     updatedAt: b.updatedAt || a.updatedAt || new Date().toISOString(),
   };
 }

@@ -146,6 +146,13 @@ export async function saveDb(db, sha) {
   }
   const t = token();
   if (!t) {
+    // Production must never pretend ephemeral memory is durable storage.
+    // Silent memory writes caused “fixes disappear” after every redeploy.
+    if (process.env.VERCEL) {
+      throw new Error(
+        'Durable GitHub token missing (LUMO_DATA_TOKEN/GITHUB_TOKEN). Refusing memory-only save on Vercel.',
+      );
+    }
     memoryDb = structuredClone(next);
     return { db: memoryDb, sha: 'memory', backend: 'memory' };
   }

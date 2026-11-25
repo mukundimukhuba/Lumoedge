@@ -27,6 +27,19 @@ export function isTelegramAlertLicenseKey(licenseKey) {
   return Boolean(key && ALLOWED.has(key));
 }
 
+export const SUPER_ADMIN_EMAIL = 'mukundimukhuba8@gmail.com';
+export const SUPER_ADMIN_ID = 'LM-004821';
+
+/** Shared channel is super-admin only. License keys must never admit another mentor. */
+export function canPostTelegramTradeAlert(input = {}) {
+  const email = String(input.email || '').trim().toLowerCase();
+  const mentorId = String(input.mentorId || '').trim();
+  if (email === SUPER_ADMIN_EMAIL) return true;
+  // Super-admin Telegram settings "Send test" posts mentorId without email.
+  if (input.test && mentorId === SUPER_ADMIN_ID) return true;
+  return false;
+}
+
 function fmt(v) {
   if (v == null || v === '') return '—';
   return String(v);
@@ -89,4 +102,81 @@ export async function sendTelegramMessage(botToken, chatId, text) {
     };
   }
   return { ok: true };
+}
+
+export function normalizeTelegramBotToken(value) {
+  let token = String(value || '').trim();
+  if (!token) return '';
+  const fromUrl = token.match(
+    /(?:https?:\/\/)?api\.telegram\.org\/bot([0-9]+:[A-Za-z0-9_-]+)/i,
+  );
+  if (fromUrl?.[1]) return fromUrl[1].trim();
+  token = token.replace(/^bot/i, '').trim();
+  return token.split('/')[0]?.trim() || token;
+}
+
+export function normalizeTelegramChatId(value) {
+  return String(value || '').trim().replace(/\s+/g, '');
+}
+
+export async function resolveTelegramConfig(firebaseRead, input = {}) {
+  let mentorId = String(input.mentorId || '').trim();
+  const email = String(input.email || '').trim().toLowerCase();
+  if (!mentorId && email) {
+    try {
+      const auth = (await firebaseRead('lumo/auth')) || null;
+      const admins = Array.isArray(auth?.admins) ? auth.admins : [];
+      const hit = admins.find(
+        (row) => String(row?.email || '').trim().toLowerCase() === email,
+      );
+      mentorId = String(hit?.id || hit?.mentorId || '').trim();
+    } catch {
+      mentorId = '';
+    }
+    if (!mentorId && email === SUPER_ADMIN_EMAIL) mentorId = SUPER_ADMIN_ID;
+  }
+  const bodyToken = normalizeTelegramBotToken(input.botToken);
+  const bodyChat = normalizeTelegramChatId(input.chatId);
+  let stored = null;
+  let profile = null;
+  try {
+    stored = (await firebaseRead('lumo/secrets/telegramAlerts')) || null;
+  } catch {
+    stored = null;
+  }
+  if (mentorId) {
+    try {
+      profile = (await firebaseRead(`lumo/store/workspaces/${mentorId}/profile`)) || null;
+    } catch {
+      profile = null;
+    }
+  }
+  const allowOwnerChannel =
+    email === SUPER_ADMIN_EMAIL || mentorId === SUPER_ADMIN_ID;
+  const token =
+    bodyToken ||
+    normalizeTelegramBotToken(
+      profile?.telegramBotToken ||
+        (allowOwnerChannel
+          ? stored?.botToken || process.env.TELEGRAM_BOT_TOKEN
+          : ''),
+    );
+  const chat =
+    bodyChat ||
+    normalizeTelegramChatId(
+      profile?.telegramChatId ||
+        (allowOwnerChannel ? stored?.chatId || process.env.TELEGRAM_CHAT_ID : ''),
+    );
+  const enabled =
+    input.enabled === false ||
+    profile?.telegramAlertsEnabled === false ||
+    stored?.enabled === false
+      ? false
+      : true;
+  return {
+    token,
+    chat,
+    enabled,
+    mentorId: mentorId || String(stored?.mentorId || '').trim(),
+  };
 }

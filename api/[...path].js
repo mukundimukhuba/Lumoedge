@@ -384,16 +384,26 @@ export default async function handler(req, res) {
 
     if (pathname === '/api/db' && req.method === 'GET') {
       const { db } = await loadDb();
-      send(res, 200, db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      const { redactPortalDb } = await import('./_lib/phoneRecover.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(db)));
       return;
     }
 
     if (pathname === '/api/db' && req.method === 'PUT') {
       const body = await readBody(req);
+      const { bodyHasPrivateLicenses, mergeRecoveryPatch, redactPortalDb } = await import(
+        './_lib/phoneRecover.mjs'
+      );
+      const stored = await mergeRecoveryPatch(body);
+      if (bodyHasPrivateLicenses(body) && !stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
       const { db, sha } = await loadDb();
-      // Merge only — never replace whole lists with empties from a partial client sync
       const saved = await saveDb(mergeDatabases(db, body), sha);
-      send(res, 200, saved.db);
+      const { publicDbSnapshot } = await import('./_lib/clientMerge.mjs');
+      send(res, 200, publicDbSnapshot(redactPortalDb(saved.db)));
       return;
     }
 
@@ -412,6 +422,15 @@ export default async function handler(req, res) {
       if (!email || !body.firstName || !body.lastName) {
         send(res, 400, { error: 'email, firstName, lastName required' });
         return;
+      }
+      try {
+        const { isBannedEmail, banReason } = await import('./_lib/bannedAccounts.mjs');
+        if (isBannedEmail(email)) {
+          send(res, 403, { ok: false, error: 'inactive', message: banReason() });
+          return;
+        }
+      } catch {
+        /* continue */
       }
       const existing = (db.clients || []).find((c) => c.email === email);
       if (existing) {
@@ -494,9 +513,28 @@ export default async function handler(req, res) {
       const body = await readBody(req);
       const { db, sha } = await loadDb();
       const prev = db.sessions?.[email];
+      const { isSessionDeviceActive, mergeSessionPreferLicense: mergeSess } = await import(
+        './_lib/clientMerge.mjs'
+      );
+      const held = prev?.device;
+      const claim = body?.device;
+      if (
+        held?.id &&
+        claim?.id &&
+        held.id !== claim.id &&
+        isSessionDeviceActive(held)
+      ) {
+        send(res, 409, {
+          ok: false,
+          code: 'DEVICE_IN_USE',
+          otherLabel: String(held.label || 'another phone'),
+          error: `This account is locked to ${held.label || 'another phone'}. Only that phone can stay signed in.`,
+        });
+        return;
+      }
       db.sessions = {
         ...(db.sessions || {}),
-        [email]: mergeSessionPreferLicense(prev, body),
+        [email]: mergeSess(prev, body),
       };
       await saveDb(db, sha);
       send(res, 200, { ok: true });
@@ -504,17 +542,20 @@ export default async function handler(req, res) {
     }
 
     if (pathname === '/api/vault' && req.method === 'GET') {
-      const { db } = await loadDb();
-      send(res, 200, db.vault || []);
+      send(res, 200, []);
       return;
     }
 
     if (pathname === '/api/vault' && req.method === 'PUT') {
       const body = await readBody(req);
-      const { db, sha } = await loadDb();
-      db.vault = Array.isArray(body) ? body : body.vault || db.vault;
-      await saveDb(db, sha);
-      send(res, 200, db.vault);
+      const incoming = Array.isArray(body) ? body : body.vault || [];
+      const { mergeRecoveryPatch } = await import('./_lib/phoneRecover.mjs');
+      const stored = await mergeRecoveryPatch({ vault: incoming, images: {} });
+      if (!stored) {
+        send(res, 503, { ok: false, error: 'Could not store licenses' });
+        return;
+      }
+      send(res, 200, []);
       return;
     }
 
@@ -643,44 +684,32 @@ export default async function handler(req, res) {
         return;
       }
 
-      const CHART_SCAN_API_KEY =
-        process.env.CHART_SCAN_API_KEY ||
-        process.env.OPENAI_API_KEY ||
-        '';
+      const { chartScanApiKey } = await import('./_lib/chartScanKey.mjs');
+      const CHART_SCAN_API_KEY = chartScanApiKey();
       const CHART_SCAN_API_URL =
         process.env.CHART_SCAN_API_URL ||
         'https://api.openai.com/v1/chat/completions';
       const CHART_SCAN_MODEL = process.env.CHART_SCAN_MODEL || 'gpt-4o';
 
+      const {
+        CHART_SCAN_PROMPT,
+        parseChartScanModelText,
+        buildScanResponse,
+      } = await import('./_lib/chartScanParse.mjs');
+
       if (!CHART_SCAN_API_KEY) {
-        const accuracy = 70 + Math.floor(Math.random() * 21);
-        const demoSymbols = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NAS100', 'BTCUSD'];
-        const symbol = demoSymbols[Math.floor(Math.random() * demoSymbols.length)];
-        const direction = Math.random() > 0.5 ? 'buy' : 'sell';
-        send(res, 200, {
-          ok: true,
+        send(res, 503, {
+          ok: false,
           demo: true,
-          accuracy,
-          symbol,
-          timeframe: 'M15',
-          direction,
-          summary: 'Demo mode — add CHART_SCAN_API_KEY on Vercel for live AI scans.',
+          tradeable: false,
+          accuracy: 0,
+          pricesValid: false,
+          error: 'Chart Scanner is not configured. Fake demo signals are disabled so they cannot be sent to MT5.',
         });
         return;
       }
 
-      const prompt =
-        'You analyze MT5 / trading chart screenshots.\n' +
-        'CRITICAL RULES FOR SYMBOL:\n' +
-        '- Read the EXACT trading symbol text shown on the chart UI (title bar, market watch, or chart header).\n' +
-        '- Do NOT guess, invent, or substitute a different pair (never default to XAUUSD/EURUSD unless that text is clearly visible).\n' +
-        '- If the symbol text is not clearly readable on the image, set symbol to null and symbol_visible to false.\n' +
-        '- Copy the symbol characters as shown (e.g. XAUUSD, EURUSD.r, NAS100, BTCUSD).\n' +
-        'Also read timeframe only if visible (M1,M5,M15,H1,H4,D1, etc), else null.\n' +
-        'Decide direction buy or sell from the chart structure only.\n' +
-        'accuracy_percent must be an integer from 70 to 90.\n' +
-        'Reply ONLY compact JSON:\n' +
-        '{"symbol":"EXACT_OR_null","symbol_visible":true,"timeframe":"M15_or_null","direction":"buy|sell","accuracy_percent":78,"summary":"one short sentence"}';
+      const prompt = CHART_SCAN_PROMPT;
 
       const upstream = await fetch(CHART_SCAN_API_URL, {
         method: 'POST',
@@ -713,89 +742,89 @@ export default async function handler(req, res) {
         return;
       }
 
-      let parsed = {};
-      try {
-        const outer = JSON.parse(raw);
-        const content =
-          outer?.choices?.[0]?.message?.content ||
-          outer?.output_text ||
-          outer?.content ||
-          '';
-        const match =
-          String(content).match(/\{[\s\S]*\}/) ||
-          String(raw).match(/\{[\s\S]*\}/);
-        parsed = match ? JSON.parse(match[0]) : {};
-      } catch {
-        parsed = {};
-      }
+      const parsed = parseChartScanModelText(raw);
+      const result = buildScanResponse(parsed, image, { demo: false });
+      const { reconcileManualScan } = await import('./_lib/autoScan.mjs');
+      const reconciled = await reconcileManualScan(result, body.id);
+      send(res, reconciled.status, reconciled.payload);
+      return;
+    }
 
-      const symbolVisible = parsed.symbol_visible !== false;
-      let symbol = parsed.symbol == null ? '' : String(parsed.symbol).trim();
-      if (
-        !symbolVisible ||
-        !symbol ||
-        /null|unknown|n\/a|none|guess/i.test(symbol)
-      ) {
-        send(res, 422, {
-          ok: false,
-          accuracy: 0,
-          error:
-            'Could not read the symbol from this chart. Upload a clearer MT5 screenshot showing the pair name.',
-        });
-        return;
-      }
-      symbol = symbol.replace(/\s+/g, '').toUpperCase();
-
-      let accuracy = Number(parsed.accuracy_percent ?? parsed.accuracy ?? 0);
-      if (!Number.isFinite(accuracy) || accuracy < 70 || accuracy > 90) {
-        accuracy = 70 + Math.floor(Math.random() * 21);
-      }
-      const rawDir = String(parsed.direction || parsed.side || '').toLowerCase();
-      if (!rawDir.includes('sell') && !rawDir.includes('buy')) {
-        send(res, 422, {
-          ok: false,
-          accuracy: 0,
-          error: 'Could not determine BUY/SELL from this chart. Try another screenshot.',
-        });
-        return;
-      }
-      const direction = rawDir.includes('sell') ? 'sell' : 'buy';
-      const timeframeRaw = parsed.timeframe == null ? '' : String(parsed.timeframe).trim();
-      const timeframe =
-        !timeframeRaw || /null|unknown|n\/a|none/i.test(timeframeRaw)
-          ? undefined
-          : timeframeRaw;
-
-      send(res, 200, {
-        ok: true,
-        demo: false,
-        accuracy: Math.round(accuracy),
-        symbol,
-        timeframe,
-        direction,
-        summary: parsed.summary || `Scan for ${symbol}`,
-      });
+    if (pathname === '/api/scan/auto' && req.method === 'POST') {
+      const body = await readBody(req);
+      const { runAutoScan } = await import('./_lib/autoScan.mjs');
+      const result = await runAutoScan(body);
+      send(res, result.status, result.payload);
       return;
     }
 
     if (pathname === '/api/scan/status' && req.method === 'GET') {
       send(res, 200, {
-        configured: Boolean(
-          process.env.CHART_SCAN_API_KEY || process.env.OPENAI_API_KEY,
-        ),
+        configured: Boolean((await import('./_lib/chartScanKey.mjs')).chartScanApiKey()),
         model: process.env.CHART_SCAN_MODEL || 'gpt-4o',
         url: process.env.CHART_SCAN_API_URL || 'https://api.openai.com/v1/chat/completions',
       });
       return;
     }
 
+    // Direct broker connect must run before the generic /api/mt5 proxy.
+    if (pathname === '/api/mt5/connect') {
+      if (req.method === 'OPTIONS') {
+        send(res, 204, {});
+        return;
+      }
+      if (req.method !== 'POST') {
+        send(res, 405, { error: 'Method not allowed' });
+        return;
+      }
+      const { connectMt5Broker } = await import('./_lib/mt5Bridge.mjs');
+      const body = await readBody(req);
+      const result = await connectMt5Broker({
+        user: body.user,
+        password: body.password,
+        server: body.server,
+      });
+      if (result.ok && result.token) {
+        send(res, 200, { token: result.token });
+      } else {
+        let err = String(result.error || 'Connect failed');
+        try {
+          const parsed = JSON.parse(err);
+          if (parsed && typeof parsed === 'object') {
+            err = String(parsed.message || parsed.error || parsed.code || err);
+          }
+        } catch {}
+        const lower = err.toLowerCase();
+        if (/invalid_account|invalid login|wrong.?password|invalid password/.test(lower)) {
+          err = 'Invalid login or password for this server. Check MT5 credentials and try again.';
+        } else if (/sendaccountpassword expected|server closed the socket/.test(lower)) {
+          err = 'Could not open this MT5 server. Search your broker again and pick the exact server name shown in MT5.';
+        } else if (/trial expired|license/.test(lower)) {
+          err = 'Broker API trial expired. Please renew the MT5 API.';
+        }
+        send(res, 502, { error: err });
+      }
+      return;
+    }
+
     // Proxy → MT5API RESTFul (broker search, ConnectEx, account, trading)
     if (pathname.startsWith('/api/mt5')) {
-      const MT5_API_BASE = (
-        process.env.MT5_API_BASE || 'http://66.23.225.158'
-      ).replace(/\/$/, '');
-      const targetPath = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
-      const targetUrl = `${MT5_API_BASE}${targetPath}${url.search}`;
+      const { enrichOrderSendPath, mt5ApiBase, mt5ProxyStatus, Mt5LevelError, orderFailureIsDisabled, alternateOrderPath } = await import(
+        './_lib/mt5Bridge.mjs'
+      );
+      const MT5_API_BASE = mt5ApiBase();
+      const sliced = pathname === '/api/mt5' ? '/' : pathname.slice('/api/mt5'.length);
+      let targetPath;
+      try {
+        targetPath = await enrichOrderSendPath(`${sliced}${url.search || ''}`);
+      } catch (err) {
+        if (err instanceof Mt5LevelError || err?.name === 'Mt5LevelError') {
+          send(res, 400, { error: err.message });
+          return;
+        }
+        throw err;
+      }
+      const targetUrl = `${MT5_API_BASE}${targetPath}`;
       const method = req.method || 'GET';
       const body =
         method === 'GET' || method === 'HEAD' ? undefined : await readRawBody(req);
@@ -806,14 +835,25 @@ export default async function handler(req, res) {
         headers['Content-Type'] = req.headers['content-type'];
       }
       try {
-        const upstream = await fetch(targetUrl, {
+        let upstream = await fetch(targetUrl, {
           method,
           headers,
           body,
         });
-        const buf = Buffer.from(await upstream.arrayBuffer());
+        let buf = Buffer.from(await upstream.arrayBuffer());
+        if (
+          /^\/OrderSend/i.test(sliced) &&
+          mt5ProxyStatus(upstream.status, buf.toString('utf8')) !== 200 &&
+          orderFailureIsDisabled(buf.toString('utf8'))
+        ) {
+          const alt = await alternateOrderPath(targetPath).catch(() => '');
+          if (alt && alt !== targetPath) {
+            upstream = await fetch(`${MT5_API_BASE}${alt}`, { method, headers, body });
+            buf = Buffer.from(await upstream.arrayBuffer());
+          }
+        }
         const ct = upstream.headers.get('content-type') || 'application/json';
-        res.statusCode = upstream.status;
+        res.statusCode = mt5ProxyStatus(upstream.status, buf.toString('utf8'));
         res.setHeader('Content-Type', ct);
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Access-Control-Allow-Origin', '*');

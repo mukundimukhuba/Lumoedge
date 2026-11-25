@@ -1,0 +1,541 @@
+import net from 'node:net';
+import tls from 'node:tls';
+
+const CRLF = '\r\n';
+
+export function headerSafe(value) {
+  return String(value || '')
+    .replace(/[\r\n\0]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function encodeSubject(subject) {
+  const safe = headerSafe(subject) || 'Lumo Edge';
+  if (/^[\x20-\x7E]*$/.test(safe)) return safe;
+  return `=?UTF-8?B?${Buffer.from(safe, 'utf8').toString('base64')}?=`;
+}
+
+const RFC5322_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const RFC5322_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export function formatRfc5322(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${RFC5322_DAYS[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${RFC5322_MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`;
+}
+
+export function buildMime({ fromName, fromEmail, to, subject, html, text, replyTo, messageId, date }) {
+  const boundary = `lumo${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const from = `${headerSafe(fromName) || 'Lumo Edge'} <${fromEmail}>`;
+  const domain = headerSafe(String(fromEmail || '').split('@')[1] || 'lumoedge.com') || 'lumoedge.com';
+  const id =
+    headerSafe(messageId) ||
+    `<lumo.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 10)}@${domain}>`;
+  const bodyText = String(text || '').replace(/\r?\n/g, CRLF);
+  const bodyHtml = String(html || '').replace(/\r?\n/g, CRLF);
+  return [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${encodeSubject(subject)}`,
+    `Date: ${formatRfc5322(date instanceof Date ? date : new Date())}`,
+    `Message-ID: ${id}`,
+    `Reply-To: ${headerSafe(replyTo) || fromEmail}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    bodyText,
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    bodyHtml,
+    `--${boundary}--`,
+    '',
+  ].join(CRLF);
+}
+
+function dotStuff(raw) {
+  return String(raw || '')
+    .replace(/\r?\n/g, CRLF)
+    .split(CRLF)
+    .map((line) => (line.startsWith('.') ? `.${line}` : line))
+    .join(CRLF);
+}
+
+function responseComplete(buffer) {
+  if (!buffer.includes('\n')) return false;
+  const lines = buffer.split(/\r?\n/).filter((line, idx, all) => line || idx < all.length - 1);
+  return lines.some((line) => /^\d{3} /.test(line));
+}
+
+function parseCode(text) {
+  const match = String(text || '').match(/^(\d{3})/m);
+  return match ? Number(match[1]) : 0;
+}
+
+class SmtpClient {
+  constructor(socket, timeoutMs) {
+    this.socket = socket;
+    this.timeoutMs = timeoutMs;
+    this.buffer = '';
+    this.waiters = [];
+    this.closedError = null;
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => {
+      this.buffer += chunk;
+      this.flush();
+    });
+    socket.on('error', (error) => this.fail(error));
+    socket.on('end', () => this.fail(new Error('SMTP connection closed')));
+  }
+
+  flush() {
+    if (!this.waiters.length || !responseComplete(this.buffer)) return;
+    const text = this.buffer;
+    this.buffer = '';
+    const waiter = this.waiters.shift();
+    waiter.resolve(text);
+  }
+
+  fail(error) {
+    this.closedError = error;
+    while (this.waiters.length) {
+      this.waiters.shift().reject(error);
+    }
+  }
+
+  read() {
+    if (this.closedError) return Promise.reject(this.closedError);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('SMTP timed out waiting for a reply'));
+      }, this.timeoutMs);
+      this.waiters.push({
+        resolve: (text) => {
+          clearTimeout(timer);
+          resolve(text);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.flush();
+    });
+  }
+
+  async expect(wanted) {
+    const text = await this.read();
+    const code = parseCode(text);
+    const allowed = Array.isArray(wanted) ? wanted : [wanted];
+    if (!allowed.includes(code)) {
+      throw new Error(headerSafe(text).slice(0, 180) || `SMTP ${code || 'error'}`);
+    }
+    return { code, text };
+  }
+
+  write(line) {
+    return new Promise((resolve, reject) => {
+      this.socket.write(`${line}${CRLF}`, (error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  async command(line, wanted) {
+    await this.write(line);
+    return this.expect(wanted);
+  }
+
+  destroy() {
+    this.socket.destroy();
+  }
+}
+
+function connectTls(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ host, port, servername: host });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Could not reach ${host}:${port}`));
+    }, timeoutMs);
+    socket.once('secureConnect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function connectPlain(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Could not reach ${host}:${port}`));
+    }, timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function upgradeTls(socket, host, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const secure = tls.connect({ socket, servername: host });
+    const timer = setTimeout(() => {
+      secure.destroy();
+      reject(new Error('SMTP STARTTLS timed out'));
+    }, timeoutMs);
+    secure.once('secureConnect', () => {
+      clearTimeout(timer);
+      resolve(secure);
+    });
+    secure.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+async function authenticate(client, username, password, method) {
+  if (method === 'plain') {
+    const token = Buffer.from(`\u0000${username}\u0000${password}`, 'utf8').toString('base64');
+    await client.command(`AUTH PLAIN ${token}`, 235);
+    return;
+  }
+  await client.command('AUTH LOGIN', 334);
+  await client.command(Buffer.from(username, 'utf8').toString('base64'), 334);
+  await client.command(Buffer.from(password, 'utf8').toString('base64'), 235);
+}
+
+async function authenticateAndSend(client, { username, password, fromEmail, to, mime, method }) {
+  await authenticate(client, username, password, method);
+  await client.command(`MAIL FROM:<${fromEmail}>`, 250);
+  await client.command(`RCPT TO:<${to}>`, [250, 251]);
+  await client.command('DATA', 354);
+  const done = await client.command(`${dotStuff(mime)}${CRLF}.`, 250);
+  await client.write('QUIT').catch(() => {});
+  const idMatch = String(done.text || '').match(/<[^>]+>/);
+  return { ok: true, id: idMatch ? idMatch[0] : 'smtp' };
+}
+
+async function smtpStartTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs, method }) {
+  const plain = await connectPlain(host, port, timeoutMs);
+  let client = new SmtpClient(plain, timeoutMs);
+  try {
+    await client.expect(220);
+    await client.command('EHLO lumoedge.com', 250);
+    await client.command('STARTTLS', 220);
+    plain.removeAllListeners('data');
+    plain.removeAllListeners('error');
+    plain.removeAllListeners('end');
+    const secure = await upgradeTls(plain, host, timeoutMs);
+    client = new SmtpClient(secure, timeoutMs);
+    await client.command('EHLO lumoedge.com', 250);
+    return await authenticateAndSend(client, { username, password, fromEmail, to, mime, method });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function smtpImplicitTlsSession({ host, port, username, password, fromEmail, to, mime, timeoutMs, method }) {
+  const secure = await connectTls(host, port, timeoutMs);
+  const client = new SmtpClient(secure, timeoutMs);
+  try {
+    await client.expect(220);
+    await client.command('EHLO lumoedge.com', 250);
+    return await authenticateAndSend(client, { username, password, fromEmail, to, mime, method });
+  } finally {
+    client.destroy();
+  }
+}
+
+/**
+ * Send one transactional message through Brevo SMTP relay.
+ * Password is the SMTP key. Never log credentials.
+ */
+export async function sendViaBrevoSmtp({
+  smtpKey,
+  login,
+  logins,
+  sender,
+  to,
+  subject,
+  html,
+  text,
+  replyTo,
+}) {
+  const fromEmail = headerSafe(sender?.email);
+  const users = [];
+  const seen = new Set();
+  for (const raw of [login, ...(Array.isArray(logins) ? logins : [])]) {
+    const user = headerSafe(raw);
+    if (!user || seen.has(user.toLowerCase())) continue;
+    seen.add(user.toLowerCase());
+    users.push(user);
+  }
+  if (!users.length || !fromEmail || !to || !smtpKey) {
+    return { ok: false, error: 'Brevo SMTP login or sender is missing.' };
+  }
+  const mime = buildMime({
+    fromName: sender?.name || 'Lumo Edge',
+    fromEmail,
+    to,
+    subject,
+    html,
+    text,
+    replyTo,
+  });
+  const errors = [];
+  for (const username of users) {
+    for (const method of ['login', 'plain']) {
+      try {
+        return await smtpStartTlsSession({
+          host: 'smtp-relay.brevo.com',
+          port: 587,
+          username,
+          password: smtpKey,
+          fromEmail,
+          to,
+          mime,
+          timeoutMs: 12000,
+          method,
+        });
+      } catch (error) {
+        errors.push(redactSmtpError(`${username}/${method} 587: ${error instanceof Error ? error.message : 'failed'}`, smtpKey));
+      }
+    }
+  }
+  for (const port of [2525, 465]) {
+    try {
+      if (port === 465) {
+        return await smtpImplicitTlsSession({
+          host: 'smtp-relay.brevo.com',
+          port,
+          username: users[0],
+          password: smtpKey,
+          fromEmail,
+          to,
+          mime,
+          timeoutMs: 12000,
+          method: 'plain',
+        });
+      }
+      return await smtpStartTlsSession({
+        host: 'smtp-relay.brevo.com',
+        port,
+        username: users[0],
+        password: smtpKey,
+        fromEmail,
+        to,
+        mime,
+        timeoutMs: 12000,
+        method: 'login',
+      });
+    } catch (error) {
+      errors.push(redactSmtpError(`${port}: ${error instanceof Error ? error.message : 'failed'}`, smtpKey));
+    }
+  }
+  return {
+    ok: false,
+    error: formatSmtpFailure(errors),
+  };
+}
+
+async function openAuthedClient({ host, port, username, password, timeoutMs, method, implicit }) {
+  if (implicit) {
+    const secure = await connectTls(host, port, timeoutMs);
+    const client = new SmtpClient(secure, timeoutMs);
+    await client.expect(220);
+    await client.command('EHLO lumoedge.com', 250);
+    await authenticate(client, username, password, method);
+    return client;
+  }
+  const plain = await connectPlain(host, port, timeoutMs);
+  let client = new SmtpClient(plain, timeoutMs);
+  await client.expect(220);
+  await client.command('EHLO lumoedge.com', 250);
+  await client.command('STARTTLS', 220);
+  plain.removeAllListeners('data');
+  plain.removeAllListeners('error');
+  plain.removeAllListeners('end');
+  const secure = await upgradeTls(plain, host, timeoutMs);
+  client = new SmtpClient(secure, timeoutMs);
+  await client.command('EHLO lumoedge.com', 250);
+  await authenticate(client, username, password, method);
+  return client;
+}
+
+/**
+ * Send the same branded message to many recipients on reused SMTP sessions.
+ * One new connection per recipient is what made "send to every client" hit 504.
+ */
+export async function sendManyViaBrevoSmtp({
+  smtpKey,
+  login,
+  logins,
+  sender,
+  recipients,
+  subject,
+  html,
+  text,
+  replyTo,
+}) {
+  const fromEmail = headerSafe(sender?.email);
+  const users = [];
+  const seenUsers = new Set();
+  for (const raw of [login, ...(Array.isArray(logins) ? logins : [])]) {
+    const user = headerSafe(raw);
+    if (!user || seenUsers.has(user.toLowerCase())) continue;
+    seenUsers.add(user.toLowerCase());
+    users.push(user);
+  }
+  const targets = [];
+  const seenTo = new Set();
+  for (const raw of Array.isArray(recipients) ? recipients : []) {
+    const to = headerSafe(raw).toLowerCase();
+    if (!to || seenTo.has(to)) continue;
+    seenTo.add(to);
+    targets.push(to);
+  }
+  if (!users.length || !fromEmail || !smtpKey) {
+    return { ok: false, error: 'Brevo SMTP login or sender is missing.', results: [] };
+  }
+  if (!targets.length) {
+    return { ok: false, error: 'No recipient emails.', results: [] };
+  }
+  const queued = targets.map((to) => ({
+    to,
+    mime: buildMime({
+      fromName: sender?.name || 'Lumo Edge',
+      fromEmail,
+      to,
+      subject,
+      html,
+      text,
+      replyTo,
+    }),
+  }));
+  const username = users[0];
+  const attempts = [
+    { port: 587, method: 'login', implicit: false },
+    { port: 587, method: 'plain', implicit: false },
+    { port: 2525, method: 'login', implicit: false },
+    { port: 465, method: 'plain', implicit: true },
+  ];
+  let client = null;
+  let lastError = '';
+  const openClient = async () => {
+    for (const attempt of attempts) {
+      try {
+        return await openAuthedClient({
+          host: 'smtp-relay.brevo.com',
+          port: attempt.port,
+          username,
+          password: smtpKey,
+          timeoutMs: 20000,
+          method: attempt.method,
+          implicit: attempt.implicit,
+        });
+      } catch (error) {
+        lastError = redactSmtpError(error instanceof Error ? error.message : 'failed', smtpKey);
+      }
+    }
+    return null;
+  };
+  client = await openClient();
+  if (!client) {
+    return { ok: false, error: formatSmtpFailure([lastError]), results: [], sent: 0, failed: targets.length, total: targets.length };
+  }
+  const results = [];
+  try {
+    let index = 0;
+    let retries = 0;
+    while (index < queued.length) {
+      const item = queued[index];
+      try {
+        await client.command(`MAIL FROM:<${fromEmail}>`, 250);
+        await client.command(`RCPT TO:<${item.to}>`, [250, 251]);
+        await client.command('DATA', 354);
+        const done = await client.command(`${dotStuff(item.mime)}${CRLF}.`, 250);
+        const idMatch = String(done.text || '').match(/<[^>]+>/);
+        results.push({ to: item.to, ok: true, id: idMatch ? idMatch[0] : 'smtp' });
+        index += 1;
+        retries = 0;
+        if (index % 60 === 0 && index < queued.length) {
+          await client.write('QUIT').catch(() => {});
+          client.destroy();
+          client = await openClient();
+          if (!client) break;
+        }
+      } catch (error) {
+        const message = redactSmtpError(error instanceof Error ? error.message : 'failed', smtpKey);
+        if (!client.closedError) {
+          results.push({ to: item.to, ok: false, error: message });
+          index += 1;
+          await client.command('RSET', [250]).catch(() => {
+            client.closedError = client.closedError || new Error('SMTP reset failed');
+          });
+        }
+        if (client.closedError) {
+          client.destroy();
+          retries += 1;
+          if (retries > 2) {
+            results.push({ to: item.to, ok: false, error: message });
+            index += 1;
+            retries = 0;
+          }
+          client = await openClient();
+          if (!client) {
+            if (!results.some((row) => row.to === item.to)) {
+              results.push({ to: item.to, ok: false, error: message });
+            }
+            break;
+          }
+        }
+      }
+    }
+  } finally {
+    if (client) {
+      await client.write('QUIT').catch(() => {});
+      client.destroy();
+    }
+  }
+  const sent = results.filter((row) => row.ok).length;
+  return {
+    ok: sent > 0,
+    sent,
+    failed: targets.length - sent,
+    total: targets.length,
+    results: results.filter((row) => !row.ok).slice(0, 20),
+    error: sent ? '' : results.find((row) => row.error)?.error || lastError || 'Brevo SMTP failed',
+  };
+}
+
+function redactSmtpError(text, secret) {
+  let out = headerSafe(text);
+  if (secret) out = out.split(secret).join('[redacted]');
+  return out.slice(0, 180);
+}
+
+export function formatSmtpFailure(errors) {
+  const detail = (Array.isArray(errors) ? errors : [])
+    .map((row) => headerSafe(row).slice(0, 160))
+    .filter(Boolean)
+    .slice(0, 5)
+    .join(' | ');
+  return detail
+    ? `Brevo SMTP failed: ${detail}`
+    : 'Brevo SMTP authentication failed. Use the SMTP key (password) from Brevo → SMTP & API with login a4e676001@smtp-brevo.com.';
+}

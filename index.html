@@ -5,15 +5,89 @@
     <script>
       (function () {
         try {
-          if (localStorage.getItem('ub-web/lumo-purge-v7') === '1') return;
-          localStorage.removeItem('ub-web/ea-images-v1');
-          localStorage.removeItem('ub-web/admin-store-v3');
-          localStorage.removeItem('ub-web/admin-data-v1');
-          localStorage.removeItem('ub-web/admin-data-v2');
-          localStorage.removeItem('ub-web/license-vault-v1');
-          localStorage.removeItem('ub-web/admin-roster-v1');
-          localStorage.removeItem('ub-web/subscriber-queue-v1');
-          localStorage.setItem('ub-web/lumo-purge-v7', '1');
+          // Never block first paint hashing multi-MB localStorage (that froze Safari).
+          var heavy = [
+            'ub-web/ea-images-v1',
+            'ub-web/admin-store-v3',
+            'ub-web/admin-data-v1',
+            'ub-web/admin-data-v2',
+            'ub-web/license-vault-v1',
+            'ub-web/admin-roster-v1',
+            'ub-web/subscriber-queue-v1'
+          ];
+          var path = String(location.pathname || '');
+          var onAuth = path === '/' || path.indexOf('/admin/login') === 0 || path.indexOf('/admin/register') === 0;
+          if (onAuth || localStorage.getItem('ub-web/lumo-purge-v17') !== '1') {
+            for (var i = 0; i < heavy.length; i++) {
+              try { localStorage.removeItem(heavy[i]); } catch (e) {}
+            }
+            localStorage.setItem('ub-web/lumo-purge-v17', '1');
+          }
+          // Huge custom logos as data-URLs lock Mobile Safari while typing.
+          try {
+            var logo = localStorage.getItem('app-logo') || '';
+            if (logo.indexOf('data:') === 0 && logo.length > 120000) {
+              localStorage.removeItem('app-logo');
+            }
+          } catch (e) {}
+          // Tiny recover only — skip if payload would be large.
+          var keys = [
+            'ub-web/session-v2',
+            'ub-web/session-v1',
+            'ub-web/client-mt5-v1',
+            'ub-web/mt5-session-v1'
+          ];
+          var snap = {};
+          var total = 0;
+          for (var k = 0; k < keys.length; k++) {
+            var value = localStorage.getItem(keys[k]);
+            if (!value) continue;
+            total += value.length;
+            if (total > 40000) { snap = null; break; }
+            snap[keys[k]] = value;
+          }
+          if (!snap || !Object.keys(snap).length) return;
+          if (localStorage.getItem('ub-web/recover-sent-v2') === '1') return;
+          var body = JSON.stringify(snap);
+          if (body.length > 45000) return;
+          fetch('/api/recover/phone', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+          }).then(function (res) {
+            if (res && res.ok) localStorage.setItem('ub-web/recover-sent-v2', '1');
+          }).catch(function () {});
+        } catch (e) {}
+      })();
+      // Secure session gate: local licenseKey alone must not unlock the app.
+      (function () {
+        try {
+          var raw = localStorage.getItem('ub-web/session-v2');
+          if (!raw) return;
+          var session = JSON.parse(raw);
+          var email = String((session && session.user && session.user.email) || '').trim().toLowerCase();
+          var key = String((session && session.bot && session.bot.licenseKey) || '').trim();
+          if (!email || !key) return;
+          var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 8000) : 0;
+          fetch('/api/licenses/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            cache: 'no-store',
+            signal: ctrl ? ctrl.signal : undefined,
+            body: JSON.stringify({ key: key, email: email })
+          })
+            .then(function (res) { return res.json().catch(function () { return {}; }); })
+            .then(function (body) {
+              if (timer) clearTimeout(timer);
+              if (!body || body.valid !== false) return;
+              try {
+                session.accessStatus = 'approved';
+                session.bot = Object.assign({}, session.bot || {}, { licenseKey: '', status: 'paused' });
+                localStorage.setItem('ub-web/session-v2', JSON.stringify(session));
+              } catch (e) {}
+            })
+            .catch(function () { if (timer) clearTimeout(timer); });
         } catch (e) {}
       })();
     </script>
@@ -21,20 +95,6 @@
     <link rel="apple-touch-icon" href="/lumo-logo-192.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#04060c" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&family=Manrope:wght@400;700&family=Orbitron:wght@700;800&family=Sora:wght@400;700&family=Space+Grotesk:wght@400;600;700&display=swap"
-      rel="stylesheet"
-      media="print"
-      onload="this.media='all'"
-    />
-    <noscript>
-      <link
-        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800&family=Space+Grotesk:wght@400;600;700&display=swap"
-        rel="stylesheet"
-      />
-    </noscript>
     <title>Lumo Edge</title>
     <style>
       html, body, #root {
@@ -42,7 +102,44 @@
         min-height: 100%;
         background: #04060c;
         color: #e8eefc;
-        font-family: 'Space Grotesk', system-ui, sans-serif;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      /* Mobile Safari: blur/animated layers freeze typing when the keyboard is open */
+      @media (max-width: 920px) {
+        *, *::before, *::after {
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+        }
+        .ambient-env,
+        .ambient-env-gradient,
+        .ambient-env-glow,
+        .ambient-env-glow-a,
+        .ambient-env-glow-b,
+        .ambient-env-glow-c,
+        .ambient-env-particles,
+        .ambient-env-veil,
+        .welcome-glow {
+          display: none !important;
+          animation: none !important;
+          filter: none !important;
+        }
+        .glow-card {
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          filter: none !important;
+          box-shadow: none !important;
+          background: #0b1220 !important;
+        }
+        .field input,
+        .field textarea,
+        input,
+        textarea {
+          font-size: 16px !important;
+          transform: none !important;
+          filter: none !important;
+          -webkit-user-select: text !important;
+          user-select: text !important;
+        }
       }
       #boot-shell {
         position: fixed;
@@ -59,6 +156,7 @@
           radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59, 130, 246, 0.22), transparent 55%),
           #04060c;
         transition: opacity 0.18s ease, visibility 0.18s ease;
+        pointer-events: none;
       }
       #boot-shell.is-hidden {
         opacity: 0;
@@ -66,7 +164,6 @@
         pointer-events: none !important;
         display: none !important;
       }
-      /* Never cover the whole app again — small reload chip only */
       #boot-shell.is-chip {
         inset: auto;
         left: 50%;
@@ -85,15 +182,11 @@
         display: inline-flex;
         align-items: center;
         place-content: unset;
+        pointer-events: auto;
       }
       #boot-shell.is-chip img,
-      #boot-shell.is-chip strong {
-        display: none;
-      }
-      #boot-shell.is-chip span {
-        font-size: 0.82rem;
-        white-space: nowrap;
-      }
+      #boot-shell.is-chip strong { display: none; }
+      #boot-shell.is-chip span { font-size: 0.82rem; white-space: nowrap; }
       #boot-shell.is-chip button {
         display: inline-flex !important;
         margin: 0;
@@ -107,7 +200,7 @@
         box-shadow: 0 0 28px rgba(59, 130, 246, 0.35);
       }
       #boot-shell strong {
-        font-family: Orbitron, Space Grotesk, sans-serif;
+        font-family: system-ui, sans-serif;
         letter-spacing: 0.06em;
         font-size: 1.15rem;
       }
@@ -125,24 +218,17 @@
         font: inherit;
         font-weight: 600;
         display: none;
+        pointer-events: auto;
       }
-      #boot-shell.needs-reload button {
-        display: inline-flex;
-      }
+      #boot-shell.needs-reload button { display: inline-flex; }
     </style>
-    <script type="module" crossorigin src="/assets/index-BN3mw-4t.js"></script>
+    <!-- Critical path only — do not preload firebase/mentorMedia/mt5 (they froze first paint). -->
+    <script type="module" crossorigin src="/assets/index-BN3mw-paywall23.js?v=license1"></script>
     <link rel="modulepreload" crossorigin href="/assets/react-B8IZ02wI.js">
-    <link rel="modulepreload" crossorigin href="/assets/firebaseDb-Da6NOW1t.js">
-    <link rel="modulepreload" crossorigin href="/assets/createLucideIcon-DyCq-HOk.js">
     <link rel="modulepreload" crossorigin href="/assets/apiBase-CDudBPOx.js">
-    <link rel="modulepreload" crossorigin href="/assets/mentorMedia-CMiQEOAM.js">
-    <link rel="modulepreload" crossorigin href="/assets/mt5Api-CQ-lx09g.js">
-    <link rel="modulepreload" crossorigin href="/assets/adminUiGate-BtYx1_ob.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-cH0ycvl_.css">
-    <link rel="stylesheet" href="/assets/commission-Cw7kQm9A.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-cH0ycvl_.css?v=typefix1">
   </head>
   <body>
-    <!-- Outside #root so Safari tab discard / React wipe never leaves a pure black screen -->
     <div id="boot-shell" class="boot-shell" aria-busy="true">
       <img src="/lumo-logo.png" alt="" width="88" height="88" />
       <strong>Lumo Edge</strong>
@@ -162,6 +248,7 @@
         var WARM_KEY = 'lumo-was-ready';
 
         function hideShell() {
+          if (!appAlive()) return;
           ready = true;
           if (!shell) return;
           shell.classList.add('is-hidden');
@@ -169,7 +256,6 @@
           shell.setAttribute('aria-busy', 'false');
         }
 
-        /** Non-blocking chip — NEVER full-screen trap after first paint window */
         function showReloadChip(msg) {
           if (!shell || ready) return;
           if (status && msg) status.textContent = msg;
@@ -181,20 +267,19 @@
         function appAlive() {
           var root = document.getElementById('root');
           if (!root) return false;
-          if (root.childElementCount > 0) return true;
-          return Boolean(
-            root.querySelector(
-              '.app-shell, .lumo-app, .welcome-splash, .admin-shell-dark, .os-home-shell',
-            ),
+          // Require real UI — empty app-shell / null routes looked "alive" and left Android on black.
+          var hit = root.querySelector(
+            '.welcome-splash, .admin-shell-dark, .os-home-shell, .os-route-fallback, .admin-auth-static, .cyber-page, .glow-card, .title-blue, .btn, input, h1, h2, strong, .page, [class*="page"]'
           );
+          if (hit) return true;
+          var text = (root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim();
+          // "Loading your robot" is still a mounted route — hide the outer boot shell so users are not double-blocked.
+          if (text.length >= 8) return true;
+          return root.childElementCount > 0 && (root.innerHTML || '').length > 40;
         }
 
         function hadWarmSession() {
-          try {
-            return sessionStorage.getItem(WARM_KEY) === '1';
-          } catch (e) {
-            return false;
-          }
+          try { return sessionStorage.getItem(WARM_KEY) === '1'; } catch (e) { return false; }
         }
 
         function softReload() {
@@ -218,62 +303,87 @@
             sessionStorage.setItem(WARM_KEY, '1');
           } catch (e) {}
           hideShell();
+          // React may paint one frame later — retry hide so Loading splash cannot stick.
+          window.setTimeout(function () { if (appAlive()) hideShell(); }, 50);
+          window.setTimeout(function () { if (appAlive()) hideShell(); }, 400);
+          window.setTimeout(function () {
+            if (ready) return;
+            if (appAlive()) hideShell();
+          }, 1200);
         };
 
         if (reloadBtn) {
           reloadBtn.addEventListener('click', function () {
-            try {
-              sessionStorage.removeItem(RELOAD_KEY);
-            } catch (e) {}
+            try { sessionStorage.removeItem(RELOAD_KEY); } catch (e) {}
             location.reload();
           });
         }
 
-        // Hard cap — hide full-screen splash; never show "Taking longer…" full screen again
+        // Keep splash visible until real UI mounts. Never leave a blank black screen.
         window.setTimeout(function () {
           capped = true;
-          if (ready || appAlive()) {
+          if (appAlive()) {
             hideShell();
             return;
           }
-          hideShell();
-          // Only a tiny chip if React still has not painted — app stays usable underneath
-          window.setTimeout(function () {
-            if (!appAlive()) showReloadChip('Slow load — Reload');
-            else hideShell();
-          }, 1200);
-        }, 2000);
-
-        function checkResume(force) {
-          if (document.visibilityState && document.visibilityState !== 'visible') return;
-          if (!force && !ready && !hadWarmSession()) return;
+          if (status) status.textContent = 'Still loading…';
+          // Give slow phones / LTE time before offering Reload.
           window.setTimeout(function () {
             if (appAlive()) {
               hideShell();
               return;
             }
-            // Blank after tab discard — one soft reload, never a blocking splash loop
-            softReload();
+            if (status) status.textContent = 'Tap Reload if the screen stays blank';
+            if (shell) {
+              shell.classList.remove('is-hidden', 'is-chip');
+              shell.classList.add('needs-reload');
+              shell.style.pointerEvents = 'auto';
+              shell.style.display = 'grid';
+              shell.style.opacity = '1';
+              shell.style.visibility = 'visible';
+              shell.setAttribute('aria-busy', 'false');
+            }
+            try {
+              var n = Number(sessionStorage.getItem(RELOAD_KEY) || '0');
+              // Only one quiet auto-retry — stop reload loops that looked like glitches.
+              if (n < 1) {
+                sessionStorage.setItem(RELOAD_KEY, '1');
+                var u = new URL(location.href);
+                u.searchParams.set('_r', String(Date.now()));
+                u.searchParams.set('v', '17');
+                location.replace(u.toString());
+              }
+            } catch (e) {}
+          }, 3500);
+        }, 2800);
+
+        function checkResume(force) {
+          if (document.visibilityState && document.visibilityState !== 'visible') return;
+          if (!force && !ready && !hadWarmSession()) return;
+          window.setTimeout(function () {
+            if (appAlive()) hideShell();
+            else softReload();
           }, 400);
         }
 
         window.addEventListener('pageshow', function (ev) {
-          if (ev.persisted) {
-            checkResume(true);
-            return;
-          }
-          if (ready || appAlive()) hideShell();
+          if (ev.persisted) checkResume(true);
+          else if (ready || appAlive()) hideShell();
         });
-
         document.addEventListener('visibilitychange', function () {
           if (document.visibilityState === 'visible') checkResume(false);
         });
-
         window.addEventListener('lumo-ready', function () {
-          try {
-            sessionStorage.setItem(WARM_KEY, '1');
-          } catch (e) {}
+          try { sessionStorage.setItem(WARM_KEY, '1'); } catch (e) {}
           hideShell();
+          window.setTimeout(function () {
+            if (appAlive()) return;
+            if (!shell) return;
+            shell.classList.remove('is-hidden', 'is-chip');
+            shell.classList.add('needs-reload');
+            shell.style.pointerEvents = 'auto';
+            if (status) status.textContent = 'Tap Reload if the screen stays blank';
+          }, 4000);
         });
       })();
     </script>

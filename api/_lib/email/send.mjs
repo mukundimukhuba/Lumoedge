@@ -1,30 +1,148 @@
+import { sendManyViaBrevoSmtp, sendViaBrevoSmtp } from './smtp.mjs';
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function isValidEmail(raw) {
-  const email = String(raw || '').trim().toLowerCase();
+  const email = String(raw || '')
+    .trim()
+    .toLowerCase();
   return EMAIL_RE.test(email) ? email : '';
 }
 
 function cleanKey(raw) {
   return String(raw || '')
+    .replace(/^\uFEFF/, '')
     .trim()
-    .replace(/^["']|["']$/g, '')
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/^(api[-_ ]?key|authorization|bearer|brevo[_ ]?api[_ ]?key)\s*[:=]\s*/i, '')
+    .replace(/[\s\u00A0\u200B\u200C\u200D]+/g, '')
     .trim();
 }
 
-function resolveFrom() {
-  const configured = String(process.env.EMAIL_FROM || '').trim();
-  if (configured) return configured;
-  // Until lumoedge.com is verified in Resend, onboarding sender works
-  return 'Lumo Edge <onboarding@resend.dev>';
+export function describeSecret(raw) {
+  const key = cleanKey(raw);
+  if (!key) {
+    return { present: false, kind: '', length: 0, prefix: '', truncated: false };
+  }
+  let kind = 'unknown';
+  if (key.startsWith('xkeysib-')) kind = 'api';
+  else if (key.startsWith('xsmtpsib-')) kind = 'smtp';
+  else if (key.startsWith('re_')) kind = 'resend';
+  const masked = /[•*]|\.{3}|…/u.test(key);
+  return {
+    present: true,
+    kind,
+    length: key.length,
+    prefix: key.slice(0, 8),
+    truncated: masked || key.length < 64,
+  };
 }
 
-/** Env first, then optional Firebase secret reader (server-side only). */
+function cleanEnv(raw) {
+  return String(raw || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+}
+
+function env(name) {
+  const direct = cleanEnv(process.env[name]);
+  if (direct) return direct;
+  const wanted = String(name || '').toLowerCase();
+  for (const [key, value] of Object.entries(process.env || {})) {
+    if (String(key || '').toLowerCase() === wanted) {
+      const hit = cleanEnv(value);
+      if (hit) return hit;
+    }
+  }
+  return '';
+}
+
+function secretEnv(name) {
+  const hit = cleanKey(env(name));
+  return hit;
+}
+
+function scanBrevoApiKeyFromEnv() {
+  for (const [key, value] of Object.entries(process.env || {})) {
+    const val = cleanKey(value);
+    if (!val) continue;
+    if (val.startsWith('xkeysib-') || val.startsWith('xsmtpsib-')) return val;
+    if (
+      /brevo|sendinblue|sendin_blue/i.test(String(key || '')) &&
+      val.length > 24 &&
+      !val.startsWith('re_')
+    ) {
+      return val;
+    }
+  }
+  return '';
+}
+
+function parseFrom(raw, fallbackName = 'Lumo Edge') {
+  const text = String(raw || '').trim();
+  const match = text.match(/^(.*)<([^>]+)>$/);
+  if (match) {
+    return {
+      name: match[1].trim().replace(/^["']|["']$/g, '') || fallbackName,
+      email: match[2].trim(),
+    };
+  }
+  if (EMAIL_RE.test(text.toLowerCase())) {
+    return { name: fallbackName, email: text };
+  }
+  return null;
+}
+
+export function resolveSender() {
+  const name = env('BREVO_SENDER_NAME') || env('EMAIL_FROM_NAME') || 'Lumo Edge';
+  const fromEnv =
+    parseFrom(env('BREVO_SENDER_EMAIL')) ||
+    parseFrom(env('EMAIL_FROM'), name) ||
+    parseFrom(env('BREVO_SMTP_LOGIN'));
+  if (fromEnv) return { name: fromEnv.name || name, email: fromEnv.email };
+  return { name, email: 'noreply@lumoedge.com' };
+}
+
+function pickBrevoSecret(candidates) {
+  const usable = candidates.filter((row) => row?.apiKey);
+  const api = usable.find((row) => describeSecret(row.apiKey).kind === 'api' && !describeSecret(row.apiKey).truncated);
+  if (api) return api;
+  const smtp = usable.find((row) => describeSecret(row.apiKey).kind === 'smtp' && !describeSecret(row.apiKey).truncated);
+  if (smtp) return smtp;
+  return usable[0] || { apiKey: '', source: '' };
+}
+
+/** Prefer a real API key over an SMTP key, from env or Firebase. Never log the key. */
+export async function resolveBrevoApiKey(firebaseRead) {
+  const fromEnv =
+    secretEnv('BREVO_API_KEY') ||
+    secretEnv('SENDINBLUE_API_KEY') ||
+    secretEnv('BREVO_SMTP_KEY') ||
+    secretEnv('BREVO_KEY') ||
+    secretEnv('BREVO_API') ||
+    secretEnv('brevo') ||
+    secretEnv('brevo_api_key') ||
+    scanBrevoApiKeyFromEnv();
+  let fromFirebase = '';
+  if (typeof firebaseRead === 'function') {
+    try {
+      const secret = (await firebaseRead('lumo/secrets/brevo')) || {};
+      fromFirebase = cleanKey(secret.apiKey || secret.BREVO_API_KEY || secret.key);
+    } catch {
+      /* ignore */
+    }
+  }
+  return pickBrevoSecret([
+    { apiKey: fromEnv, source: 'env' },
+    { apiKey: fromFirebase, source: 'firebase' },
+  ]);
+}
+
 export async function resolveResendApiKey(firebaseRead) {
   const fromEnv =
-    cleanKey(process.env.RESEND_API_KEY) ||
-    cleanKey(process.env.RESEND_KEY) ||
-    cleanKey(process.env.RESEND_TOKEN);
+    secretEnv('RESEND_API_KEY') || secretEnv('RESEND_KEY') || secretEnv('RESEND_TOKEN') || secretEnv('resend');
   if (fromEnv) return { apiKey: fromEnv, source: 'env' };
   if (typeof firebaseRead === 'function') {
     try {
@@ -38,78 +156,401 @@ export async function resolveResendApiKey(firebaseRead) {
   return { apiKey: '', source: '' };
 }
 
+export async function resolveEmailProvider(firebaseRead) {
+  const brevo = await resolveBrevoApiKey(firebaseRead);
+  if (brevo.apiKey) return { provider: 'brevo', ...brevo };
+  const resend = await resolveResendApiKey(firebaseRead);
+  if (resend.apiKey) return { provider: 'resend', ...resend };
+  return { provider: '', apiKey: '', source: '' };
+}
+
+function resolveResendSender() {
+  return (
+    parseFrom(env('RESEND_FROM')) ||
+    parseFrom(env('EMAIL_FROM'), env('EMAIL_FROM_NAME') || 'Lumo Edge') ||
+    { name: 'Lumo Edge', email: 'onboarding@resend.dev' }
+  );
+}
+
+function resolveSmtpLogins(sender) {
+  const seen = new Set();
+  const logins = [];
+  for (const raw of [
+    env('BREVO_SMTP_LOGIN'),
+    env('BREVO_SMTP_USER'),
+    'a4e676001@smtp-brevo.com',
+  ]) {
+    const email = isValidEmail(raw) || headerSafeLogin(raw);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    logins.push(email);
+  }
+  return logins;
+}
+
+function headerSafeLogin(raw) {
+  const text = String(raw || '')
+    .replace(/[\r\n\0]+/g, '')
+    .trim();
+  return text && !/\s/.test(text) ? text : '';
+}
+
+function truncatedKeyError() {
+  return 'Brevo key looks incomplete. Generate a new API key under SMTP & API → API keys and paste the full xkeysib- value.';
+}
+
+function rejectedKeyError() {
+  return 'Brevo rejected this key. Use a full API key from SMTP & API → API keys (starts with xkeysib-), not the SMTP key.';
+}
+
+function dayStamp(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+let deliveryCache = { at: 0, value: null };
+
+async function fetchJson(url, headers) {
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(4000) });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, data };
+}
+
 /**
- * Send via Resend. API key from Vercel env or Firebase secret (never frontend).
- * @returns {Promise<{ ok: boolean, id?: string, error?: string, skipped?: boolean }>}
+ * Inbox placement counters only. Never returns recipients, message bodies, or keys.
  */
-export async function sendResendEmail({
+export async function describeDeliveryHealth(firebaseRead) {
+  const now = Date.now();
+  if (deliveryCache.value && now - deliveryCache.at < 10 * 60 * 1000) return deliveryCache.value;
+  const resolved = await resolveEmailProvider(firebaseRead);
+  const secret = describeSecret(resolved.apiKey);
+  const health = {
+    provider: resolved.provider || '',
+    transport: secret.kind === 'smtp' ? 'smtp' : resolved.provider === 'brevo' ? 'api' : resolved.provider || '',
+    brevo: { available: false },
+    resend: { configured: false, domains: [] },
+  };
+  const end = new Date();
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+  if (resolved.provider === 'brevo' && resolved.apiKey) {
+    try {
+      const url = `https://api.brevo.com/v3/smtp/statistics/aggregatedReport?startDate=${dayStamp(start)}&endDate=${dayStamp(end)}`;
+      const res = await fetchJson(url, { accept: 'application/json', 'api-key': resolved.apiKey });
+      const data = res.data;
+      if (res.ok && data && typeof data === 'object' && !Array.isArray(data)) {
+        const pick = (name) => Number(data[name] || 0);
+        health.brevo = {
+          available: true,
+          requests: pick('requests'),
+          delivered: pick('delivered'),
+          hardBounces: pick('hardBounces'),
+          softBounces: pick('softBounces'),
+          blocked: pick('blocked'),
+          deferred: pick('deferred'),
+          invalid: pick('invalid'),
+        };
+      }
+    } catch {
+      health.brevo = { available: false };
+    }
+  }
+  const resend = await resolveResendApiKey(firebaseRead);
+  if (resend.apiKey) {
+    health.resend.configured = true;
+    try {
+      const res = await fetchJson('https://api.resend.com/domains', {
+        Authorization: `Bearer ${resend.apiKey}`,
+      });
+      const rows = Array.isArray(res.data?.data) ? res.data.data : [];
+      health.resend.domains = rows.slice(0, 8).map((row) => ({
+        name: String(row?.name || ''),
+        status: String(row?.status || ''),
+      }));
+      health.resend.ok = res.ok;
+    } catch {
+      health.resend.ok = false;
+    }
+  }
+  deliveryCache = { at: now, value: health };
+  return health;
+}
+
+export async function describeEmailConfig(firebaseRead) {
+  const resolved = await resolveEmailProvider(firebaseRead);
+  const secret = describeSecret(resolved.apiKey);
+  const sender = resolved.provider === 'resend' ? resolveResendSender() : resolveSender();
+  return {
+    configured: Boolean(resolved.apiKey),
+    provider: resolved.provider || '',
+    source: resolved.source || '',
+    transport:
+      secret.kind === 'smtp' ? 'smtp' : resolved.provider === 'brevo' ? 'api' : resolved.provider || '',
+    keyKind: secret.kind,
+    keyLength: secret.length,
+    keyPrefix: secret.prefix,
+    keyLooksTruncated: Boolean(secret.truncated),
+    senderEmail: sender.email,
+    senderName: sender.name,
+    smtpLogin: secret.kind === 'smtp' ? resolveSmtpLogins(sender)[0] || '' : '',
+  };
+}
+
+async function sendViaBrevo({ apiKey, to, subject, html, text, tags }) {
+  const sender = resolveSender();
+  const payload = {
+    sender: { name: sender.name, email: sender.email },
+    to: [{ email: to }],
+    subject,
+    htmlContent: html,
+    textContent: text,
+    replyTo: {
+      email: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+      name: sender.name,
+    },
+  };
+  if (Array.isArray(tags) && tags.length) {
+    payload.tags = tags.map((tag) => (typeof tag === 'string' ? tag : tag?.value)).filter(Boolean);
+  }
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      'api-key': apiKey,
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: data?.message || data?.error || `Brevo failed (${res.status})`,
+    };
+  }
+  return { ok: true, id: String(data?.messageId || data?.messageIds?.[0] || '') };
+}
+
+async function sendViaResend({ apiKey, to, subject, html, text, tags }) {
+  const sender = resolveResendSender();
+  const payload = {
+    from: `${sender.name} <${sender.email}>`,
+    to: [to],
+    subject,
+    html,
+    text,
+    reply_to: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+  };
+  if (Array.isArray(tags) && tags.length) {
+    payload.tags = tags.map((tag) => (typeof tag === 'string' ? { name: 'type', value: tag } : tag));
+  }
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: data?.message || data?.error || `Resend failed (${res.status})`,
+    };
+  }
+  return { ok: true, id: data?.id || '' };
+}
+
+/**
+ * Send a branded Lumo Edge transactional email.
+ * Credentials come from environment / server secrets only — never the frontend.
+ */
+async function renderFromTemplate(template, variables, subject, html, text) {
+  if ((!html || !subject) && template) {
+    try {
+      const { registrationConfirmationEmail, mentorApprovedEmail, licenseKeyEmail, passwordResetEmail, adminManualEmail } =
+        await import('./messages.mjs');
+      const builders = {
+        registration_confirmation: registrationConfirmationEmail,
+        mentor_approval: mentorApprovedEmail,
+        license_key: licenseKeyEmail,
+        password_reset: passwordResetEmail,
+        admin_manual: adminManualEmail,
+      };
+      const build = builders[String(template || '')];
+      if (typeof build === 'function') {
+        const msg = build(variables || {});
+        return {
+          subject: subject || msg.subject,
+          html: html || msg.html,
+          text: text || msg.text,
+        };
+      }
+    } catch {
+      /* keep caller-provided content */
+    }
+  }
+  return { subject, html, text };
+}
+
+export async function sendLumoEmail({
   to,
   subject,
   html,
   text,
-  replyTo,
   tags,
   firebaseRead,
+  template,
+  variables,
 }) {
-  const { apiKey } = await resolveResendApiKey(firebaseRead);
-  if (!apiKey) {
-    return {
-      ok: false,
-      error:
-        'Resend API key not configured. Super Admin → Send Emails → paste API key and Save, or set RESEND_API_KEY on Vercel and Redeploy.',
-    };
-  }
   const recipient = isValidEmail(to);
   if (!recipient) {
     return { ok: false, skipped: true, error: 'invalid or missing recipient email' };
   }
-  const from = resolveFrom();
+  const rendered = await renderFromTemplate(template, variables, subject, html, text);
+  subject = rendered.subject;
+  html = rendered.html;
+  text = rendered.text;
+  const resolved = await resolveEmailProvider(firebaseRead);
+  if (!resolved.apiKey) {
+    return {
+      ok: false,
+      error: 'Email provider is not configured. Set BREVO_API_KEY on the server.',
+    };
+  }
+  const secret = describeSecret(resolved.apiKey);
+  if (resolved.provider === 'brevo' && secret.truncated) {
+    return { ok: false, provider: 'brevo', transport: secret.kind || 'api', error: truncatedKeyError() };
+  }
   const plain =
     String(text || '').trim() ||
     String(html || '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-  const payload = {
-    from,
-    to: [recipient],
-    subject: String(subject || '').trim() || 'Lumo Edge',
-    html: String(html || ''),
-    text: plain,
-    reply_to: String(
-      replyTo || process.env.EMAIL_REPLY_TO || 'lumoedge08@gmail.com',
-    ).trim(),
-    headers: {
-      'List-Unsubscribe': `<mailto:lumoedge08@gmail.com?subject=unsubscribe>`,
-      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-    },
-  };
-  if (Array.isArray(tags) && tags.length) {
-    payload.tags = tags.map((t) =>
-      typeof t === 'string' ? { name: 'type', value: t } : t,
-    );
-  }
+  const subjectLine = String(subject || '').trim() || 'Lumo Edge';
+  const htmlBody = String(html || '');
+  const tagList = tags || (template ? [template] : undefined);
   try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return {
-        ok: false,
-        error: data?.message || data?.error || `Resend failed (${res.status})`,
-      };
+    if (resolved.provider === 'brevo') {
+      if (secret.kind === 'smtp') {
+        const sender = resolveSender();
+        const smtp = await sendViaBrevoSmtp({
+          smtpKey: resolved.apiKey,
+          logins: resolveSmtpLogins(sender),
+          sender,
+          to: recipient,
+          subject: subjectLine,
+          html: htmlBody,
+          text: plain,
+          replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+        });
+        return { ...smtp, provider: 'brevo', transport: 'smtp' };
+      }
+      const rest = await sendViaBrevo({
+        apiKey: resolved.apiKey,
+        to: recipient,
+        subject: subjectLine,
+        html: htmlBody,
+        text: plain,
+        tags: tagList,
+      });
+      if (!rest.ok && /key not found/i.test(String(rest.error || ''))) {
+        if (secret.kind !== 'api') {
+          const sender = resolveSender();
+          const smtp = await sendViaBrevoSmtp({
+            smtpKey: resolved.apiKey,
+            logins: resolveSmtpLogins(sender),
+            sender,
+            to: recipient,
+            subject: subjectLine,
+            html: htmlBody,
+            text: plain,
+            replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+          });
+          if (smtp.ok) return { ...smtp, provider: 'brevo', transport: 'smtp' };
+        }
+        return { ok: false, provider: 'brevo', transport: 'api', error: rejectedKeyError() };
+      }
+      return { ...rest, provider: 'brevo', transport: 'api' };
     }
-    return { ok: true, id: data?.id || '' };
-  } catch (e) {
+    const result = await sendViaResend({
+      apiKey: resolved.apiKey,
+      to: recipient,
+      subject: subjectLine,
+      html: htmlBody,
+      text: plain,
+      tags: tagList,
+    });
+    return { ...result, provider: resolved.provider, transport: 'api' };
+  } catch (error) {
     return {
       ok: false,
-      error: e instanceof Error ? e.message : 'Resend request failed',
+      provider: resolved.provider,
+      error: error instanceof Error ? error.message : 'Email request failed',
     };
   }
 }
+
+/**
+ * One branded message to many recipients. Reuses the Brevo SMTP session
+ * so a client blast does not open a new connection per address.
+ */
+export async function sendLumoEmailMany({ recipients, subject, html, text, firebaseRead }) {
+  const targets = [...new Set((Array.isArray(recipients) ? recipients : []).map((row) => isValidEmail(row)).filter(Boolean))];
+  if (!targets.length) {
+    return { ok: false, error: 'No recipient emails.', sent: 0, failed: 0, total: 0, results: [] };
+  }
+  const resolved = await resolveEmailProvider(firebaseRead);
+  if (!resolved.apiKey) {
+    return { ok: false, error: 'Email provider is not configured. Set BREVO_API_KEY on the server.', sent: 0, failed: targets.length, total: targets.length, results: [] };
+  }
+  const secret = describeSecret(resolved.apiKey);
+  if (resolved.provider === 'brevo' && secret.truncated) {
+    return { ok: false, provider: 'brevo', error: truncatedKeyError(), sent: 0, failed: targets.length, total: targets.length, results: [] };
+  }
+  const plain =
+    String(text || '').trim() ||
+    String(html || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const subjectLine = String(subject || '').trim() || 'Lumo Edge';
+  const htmlBody = String(html || '');
+  if (resolved.provider === 'brevo' && secret.kind === 'smtp') {
+    const sender = resolveSender();
+    const smtp = await sendManyViaBrevoSmtp({
+      smtpKey: resolved.apiKey,
+      logins: resolveSmtpLogins(sender),
+      sender,
+      recipients: targets,
+      subject: subjectLine,
+      html: htmlBody,
+      text: plain,
+      replyTo: env('EMAIL_REPLY_TO') || 'lumoedge08@gmail.com',
+    });
+    return { ...smtp, provider: 'brevo', transport: 'smtp' };
+  }
+  const results = [];
+  for (const to of targets) {
+    const one = await sendLumoEmail({ to, subject: subjectLine, html: htmlBody, text: plain, firebaseRead });
+    results.push({ to, ok: Boolean(one.ok), error: one.error || '' });
+  }
+  const sent = results.filter((row) => row.ok).length;
+  return {
+    ok: sent > 0,
+    provider: resolved.provider,
+    transport: 'api',
+    sent,
+    failed: targets.length - sent,
+    total: targets.length,
+    results: results.filter((row) => !row.ok).slice(0, 20),
+    error: sent ? '' : results.find((row) => row.error)?.error || 'Email request failed',
+  };
+}
+
+/** Backward-compatible alias used by older callers. */
+export async function sendResendEmail(input) {
+  return sendLumoEmail(input);
+}
+
+export { sendLumoEmail as sendBrevoEmail };

@@ -1,0 +1,242 @@
+import {
+  keepNewerPassword,
+  mergeClientRecord,
+  mergeAdminsLive,
+  pickAdminRole,
+} from './clientMerge.mjs';
+import { loadRecoveryDb, mergeRecoveryPatch } from './phoneRecover.mjs';
+import { activityFieldsOnApprove } from './mentorActivity.mjs';
+
+const SUPER_ID = 'LM-004821';
+
+function emailOf(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+export function visibleClient(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const next = { ...entry };
+  delete next.licenseKey;
+  delete next.key;
+  delete next.password;
+  delete next.passwordSha256;
+  delete next.sessionToken;
+  delete next.token;
+  return next;
+}
+
+export function combineSubscriptions(...lists) {
+  const byEmail = new Map();
+  for (const list of lists) {
+    const rows = Array.isArray(list) ? list : [];
+    for (const item of rows) {
+      const email = emailOf(item?.email);
+      if (!email) continue;
+      const prev = byEmail.get(email);
+      if (!prev) {
+        byEmail.set(email, { ...item, email });
+        continue;
+      }
+      const merged = mergeClientRecord(prev, { ...item, email });
+      if (prev.id) merged.id = prev.id;
+      if (prev.paymentClaimed || item.paymentClaimed) {
+        merged.paymentClaimed = true;
+        merged.paymentClaimedAt = item.paymentClaimedAt || prev.paymentClaimedAt;
+      }
+      byEmail.set(email, merged);
+    }
+  }
+  return [...byEmail.values()];
+}
+
+export function findSubscription(clients, id) {
+  const key = String(id || '').trim();
+  const lower = key.toLowerCase();
+  return (
+    (clients || []).find(
+      (row) => row?.id === key || emailOf(row?.email) === lower,
+    ) || null
+  );
+}
+
+export function nextAdminRecord(admins, id, role, fallback = null) {
+  const key = String(id || '').trim();
+  const keyLower = key.toLowerCase();
+  let hit = null;
+  const mapped = (admins || []).map((row) => {
+    const match = row?.id === key || emailOf(row?.email) === keyLower;
+    if (!match) return row;
+    hit = { ...row, role: pickAdminRole(row.role, role) };
+    return hit;
+  });
+  if (!hit && fallback?.email) {
+    const email = emailOf(fallback.email);
+    for (let i = 0; i < mapped.length; i += 1) {
+      if (emailOf(mapped[i]?.email) !== email) continue;
+      hit = { ...mapped[i], role: pickAdminRole(mapped[i].role, role) };
+      mapped[i] = hit;
+      break;
+    }
+    if (!hit) {
+      hit = {
+        ...fallback,
+        email,
+        role: pickAdminRole(fallback.role, role),
+      };
+      mapped.push(hit);
+    }
+  }
+  return { admins: mapped, hit };
+}
+
+async function privateDb() {
+  try {
+    return (await loadRecoveryDb()) || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listPrivateClients() {
+  const db = await privateDb();
+  return Array.isArray(db?.clients) ? db.clients : [];
+}
+
+export async function listPrivateAdmins() {
+  const db = await privateDb();
+  return Array.isArray(db?.auth?.admins) ? db.auth.admins : [];
+}
+
+function privateMap(db, key) {
+  const value = db?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+export async function listPrivateResets() {
+  const db = await privateDb();
+  return privateMap(db, 'passwordResets');
+}
+
+export async function savePrivateReset(id, record) {
+  const key = String(id || '').trim();
+  if (!key || !record || typeof record !== 'object') return false;
+  const saved = await mergeRecoveryPatch({ passwordResets: { [key]: record } });
+  return Boolean(saved);
+}
+
+export async function listPrivateResetLimit(id) {
+  const db = await privateDb();
+  const bucket = privateMap(db, 'passwordResetLimits')[String(id || '')];
+  return bucket && typeof bucket === 'object' ? bucket : { requests: [] };
+}
+
+export async function savePrivateResetLimit(id, bucket) {
+  const key = String(id || '').trim();
+  if (!key) return false;
+  const saved = await mergeRecoveryPatch({ passwordResetLimits: { [key]: bucket || { requests: [] } } });
+  return Boolean(saved);
+}
+
+export async function savePrivateClient(entry, preloaded) {
+  const email = emailOf(entry?.email);
+  if (!email) return null;
+  const db = preloaded && typeof preloaded === 'object' ? preloaded : await privateDb();
+  if (!db) return null;
+  const current = Array.isArray(db.clients) ? db.clients : [];
+  const prev = findSubscription(current, email);
+  const next = prev ? combineSubscriptions([prev], [{ ...entry, email }])[0] : { ...entry, email };
+  if (prev?.id) next.id = prev.id;
+  const saved = await mergeRecoveryPatch(
+    {
+      clients: [next],
+      store: {
+        workspaces: {
+          [SUPER_ID]: { clientRequests: [next] },
+        },
+      },
+    },
+    db,
+  );
+  return saved ? next : null;
+}
+
+export async function patchPrivateClient(id, patch) {
+  const db = await privateDb();
+  if (!db) return null;
+  const current = Array.isArray(db.clients) ? db.clients : [];
+  const prev = findSubscription(current, id);
+  if (!prev) return null;
+  const updated = mergeClientRecord(prev, {
+    ...prev,
+    ...patch,
+    email: prev.email,
+    id: prev.id,
+  });
+  if (patch?.paymentClaimed === true || prev.paymentClaimed) {
+    updated.paymentClaimed = true;
+    updated.paymentClaimedAt =
+      patch?.paymentClaimedAt || prev.paymentClaimedAt || new Date().toISOString();
+  }
+  const saved = await mergeRecoveryPatch(
+    {
+      clients: [updated],
+      store: {
+        workspaces: {
+          [SUPER_ID]: { clientRequests: [updated] },
+        },
+      },
+    },
+    db,
+  );
+  return saved ? updated : null;
+}
+
+export async function savePrivateMentor(entry, workspace = null) {
+  const email = emailOf(entry?.email);
+  if (!email) return null;
+  const record = { ...entry, email };
+  const patch = { auth: { admins: [record] } };
+  if (workspace && record.id) {
+    patch.store = { workspaces: { [record.id]: workspace } };
+  }
+  const saved = await mergeRecoveryPatch(patch);
+  return saved ? record : null;
+}
+
+export async function approvePrivateMentor(id, role, fallback = null, now = new Date()) {
+  const db = await privateDb();
+  if (!db) return null;
+  const current = Array.isArray(db?.auth?.admins) ? db.auth.admins : [];
+  const { hit } = nextAdminRecord(current, id, role, fallback);
+  if (!hit) return null;
+  // Approval must never clear credentials. Prefer the existing private hash,
+  // then any password still present on the fallback row from mentors.json.
+  const prior =
+    current.find(
+      (row) =>
+        row?.id === hit.id || emailOf(row?.email) === emailOf(hit.email),
+    ) || null;
+  const next = {
+    ...hit,
+    ...(role === 'admin' ? activityFieldsOnApprove(now) : {}),
+    role: pickAdminRole(hit.role, role),
+  };
+  keepNewerPassword(prior || {}, { ...fallback, ...hit }, next);
+  if (!String(next.password || '') && String(fallback?.password || '')) {
+    next.password = String(fallback.password);
+  }
+  if (!String(next.portalPassword || '') && String(fallback?.portalPassword || '')) {
+    next.portalPassword = String(fallback.portalPassword);
+  }
+  if (!String(next.portalPassword || '') && String(prior?.portalPassword || '')) {
+    next.portalPassword = String(prior.portalPassword);
+  }
+  const saved = await savePrivateMentor(next, null);
+  return saved ? next : null;
+}
+
+export function mergeAdminRosters(...lists) {
+  return lists.reduce((acc, list) => mergeAdminsLive(acc, list || []), []);
+}

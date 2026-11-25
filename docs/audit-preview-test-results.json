@@ -1,0 +1,56 @@
+{
+  "host": "https://lumoedge-bj50a6l4z-mukundimukhuba8-1225s-projects.vercel.app",
+  "key": "LUMO-T4O6-RU90-8ANS",
+  "results": [
+    [
+      "publish fresh key",
+      true,
+      "200 2.45s {'ok': True, 'key': 'LUMO-T4O6-RU90-8ANS'}"
+    ],
+    [
+      "wrong email blocked",
+      true,
+      "403 {'ok': False, 'error': 'This key was issued for mukundimukhuba8@gmail.com. Log in as that email, or ask your admin for a key for wrong@example.com.'}"
+    ],
+    [
+      "correct claim",
+      true,
+      "200 1.8s None"
+    ],
+    [
+      "verify owner",
+      true,
+      "200 {'ok': True, 'valid': True, 'license': {'key': 'LUMO-T4O6-RU90-8ANS', 'eaImage': '', 'mainText': '', 'symbols': ['XAUUSD'], 'customMedia': [], 'ownerAdminId': 'LM-004821', 'clientName': '', 'clientEmail': 'mukundimukhuba8@gmail.com', 'duration': '', 'status': 'assigned', 'assignedEmail': 'mukundimukhuba8@gmail.com', 'assignedAt': '2026-11-25T21:56:12.818Z'}}"
+    ],
+    [
+      "verify other denied",
+      true,
+      "200 {'ok': True, 'valid': False, 'reason': 'other_account'}"
+    ],
+    [
+      "fake key invalid",
+      true,
+      "400 {'ok': False, 'error': 'Invalid key'}"
+    ],
+    [
+      "claim has owner",
+      true,
+      "LM-004821"
+    ],
+    [
+      "approve works",
+      true,
+      "200 None"
+    ],
+    [
+      "approve idempotent",
+      true,
+      "200 {'ok': True, 'client': {'id': 'cli-1790926291694', 'email': 'mukundimukhuba8@gmail.com', 'firstName': 'Mukundi', 'lastName': 'mukhuba', 'status': 'approved', 'createdAt': '2026-11-25T13:31:16.788Z', 'notifiedAt': '2026-11-25T13:31:16.788Z', 'paymentClaimed': True, 'paymentClaimedAt': '2026-11-25T13:31:16.481Z', 'paymentVerified': True, 'paymentVerifiedAt': '2026-11-23T16:20:06.945Z', 'paymentVerifiedSource': 'admin', 'licenseReleasedAt': '2026-09-06T15:53:36.597Z', 'fullName': 'Lebogang Dlepu', 'amountPaid': 'R350', 'amountCents': 35000, 'source': 'r350-special', 'paymentReference': 'fix-mukundim'}, 'subscription': {'id': 'cli-1790926291694', 'email': 'mukundimukhuba8@gmail.com', 'firstName': 'Mukundi', 'lastName': 'mukhuba', 'status': 'approved', 'subscriptionStatus': 'approved', 'subscriptionStatusLabel': 'Approved', 'paymentVerified': True, 'paymentClaimed': True, 'canActivate': True, 'approvedAt': '2026-11-23T16:20:06.945Z', 'approvedBy': None}, 'idempotent': True}"
+    ],
+    [
+      "subscription status approved",
+      true,
+      "{'id': 'cli-1790926291694', 'email': 'mukundimukhuba8@gmail.com', 'firstName': 'Mukundi', 'lastName': 'mukhuba', 'status': 'approved', 'subscriptionStatus': 'approved', 'subscriptionStatusLabel': 'Approved', 'paymentVerified': True, 'paymentClaimed': True, 'canActivate': True, 'approvedAt': '2026-11-23T16:20:06.945Z', 'approvedBy': None}"
+    ]
+  ]
+}

@@ -63,7 +63,9 @@ export function validateEmailAccess(license, email, vault, workspaces) {
   const normalizedEmail = String(email || '').trim().toLowerCase();
   if (!normalizedEmail) return 'Email required.';
 
-  if (license.status === 'assigned') {
+  // Same email may unlock many keys (shared household logins).
+  // One key is still bound to one assigned account.
+  if (String(license.status || '').toLowerCase() === 'assigned') {
     if (String(license.assignedEmail || '').toLowerCase() === normalizedEmail) return null;
     return 'This license key is already used by another account.';
   }
@@ -73,31 +75,14 @@ export function validateEmailAccess(license, email, vault, workspaces) {
     return `This key was issued for ${license.clientEmail || license.email}. Log in as that email, or ask your admin for a key for ${normalizedEmail}.`;
   }
 
-  for (const entry of dbList(vault)) {
-    if (
-      entry?.status === 'assigned' &&
-      String(entry.assignedEmail || '').toLowerCase() === normalizedEmail &&
-      !keysMatch(String(entry.key || ''), String(license.key || '')) &&
-      String(entry.ownerAdminId || '') === String(license.ownerAdminId || '')
-    ) {
-      return 'This email already has an active license. Use that key or contact your admin.';
-    }
-  }
-
-  for (const ws of Object.values(workspaces || {})) {
-    for (const lic of dbList(ws?.licenses)) {
-      if (
-        lic?.status === 'assigned' &&
-        String(lic.assignedEmail || '').toLowerCase() === normalizedEmail &&
-        !keysMatch(String(lic.key || ''), String(license.key || '')) &&
-        String(lic.ownerAdminId || '') === String(license.ownerAdminId || '')
-      ) {
-        return 'This email already has an active license. Use that key or contact your admin.';
-      }
-    }
-  }
-
   return null;
+}
+
+/** Exact fingerprint only — fuzzy OCR matching must not revoke unrelated keys. */
+export function keysMatchExact(a, b) {
+  const fa = keyFingerprint(a);
+  const fb = keyFingerprint(b);
+  return Boolean(fa && fb && fa === fb);
 }
 
 export function toClaimPayload(entry) {
@@ -152,6 +137,7 @@ export function releaseEntry(entry, email) {
       status: 'active',
       assignedEmail: null,
       assignedAt: null,
+      __forceRelease: true,
     },
   };
 }

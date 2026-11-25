@@ -1,0 +1,33 @@
+[
+  {
+    "path": "recovery/db.json",
+    "bytes": 8807191,
+    "sha256": "30cddc7688e727e1aaca48510af35909576f53e92f6b89a5d3a4198096d9872f",
+    "seconds": 20.25,
+    "admins": 1854,
+    "clients": 4324,
+    "vault": 2407,
+    "workspaces": 1840
+  },
+  {
+    "path": "recovery/subscriptions.json",
+    "bytes": 871905,
+    "sha256": "851e3703b034217ef00430769e62043895c4842e5ff0aa481603d2525cc8d83c",
+    "seconds": 1.77,
+    "sub_clients": 2173
+  },
+  {
+    "path": "recovery/mentors.json",
+    "bytes": 260479,
+    "sha256": "47ec53dd4afba8b6403a253881b97ffb9d8d5714ecef574a58485365f26a40fa",
+    "seconds": 0.8,
+    "mentors": 689
+  },
+  {
+    "path": "recovery/license-index.json",
+    "bytes": 31099,
+    "sha256": "589032b90f30795ed14b1df9c679dabb0b78e470ea4c365ab18f6b54142be1f2",
+    "seconds": 1.51,
+    "keys": 146
+  }
+]

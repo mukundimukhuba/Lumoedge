@@ -1,14 +1,10 @@
+import { createHash, randomBytes } from 'node:crypto';
 import {
   isRegistrationEmail,
   normalizeRegistrationEmail,
   splitNameFromEmail,
 } from './registrationEmail.mjs';
 
-const FIREBASE_DB_URL = (
-  process.env.FIREBASE_DATABASE_URL ||
-  process.env.VITE_FIREBASE_DATABASE_URL ||
-  'https://lumoedge-61c02-default-rtdb.firebaseio.com'
-).replace(/\/$/, '');
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -33,14 +29,9 @@ export function pickClientStatus(a, b) {
   return 'rejected';
 }
 
-/** Live Firebase queue wins for pending — stale GitHub approved must not hide new registrations. */
+/** An approval sticks. A later pending or unpaid copy must not cancel it. */
 export function pickClientStatusLive(live, backup) {
-  const l = normalizeClientStatus(live);
-  const b = normalizeClientStatus(backup);
-  if (l === 'rejected') return 'rejected';
-  if (l === 'approved') return 'approved';
-  if (l === 'pending') return 'pending';
-  return b;
+  return pickClientStatus(live, backup);
 }
 
 export function mergeClientRecordLive(backup, live) {
@@ -53,11 +44,18 @@ export function mergeClientRecordLive(backup, live) {
     paymentClaimed:
       'paymentClaimed' in live
         ? Boolean(live.paymentClaimed)
-        : Boolean(backup.paymentClaimed),
-    paymentClaimedAt:
-      'paymentClaimedAt' in live
-        ? live.paymentClaimedAt || undefined
-        : backup.paymentClaimedAt,
+        : Boolean(backup.paymentClaimed) || Boolean(live.paymentClaimed),
+    paymentClaimedAt: live.paymentClaimedAt || backup.paymentClaimedAt,
+    paymentVerified:
+      live?.revokePaymentVerified === true
+        ? false
+        : Boolean(backup.paymentVerified) || live?.paymentVerified === true,
+    paymentVerifiedSource:
+      live?.revokePaymentVerified === true
+        ? undefined
+        : live?.paymentVerified === true
+          ? live.paymentVerifiedSource || backup.paymentVerifiedSource || 'admin'
+          : backup.paymentVerifiedSource || live?.paymentVerifiedSource || undefined,
     licenseReleasedAt:
       'licenseReleasedAt' in live
         ? live.licenseReleasedAt || undefined
@@ -83,19 +81,35 @@ export function mergeClientsLive(liveList, backupList) {
 
 export function mergeClientRecord(prev, incoming) {
   const email = String(incoming.email || prev.email || '').toLowerCase();
+  const revoked =
+    incoming?.revokePaymentVerified === true || prev?.revokePaymentVerified === true;
+  const paymentVerified = revoked
+    ? incoming?.paymentVerified === true
+    : Boolean(prev.paymentVerified) || incoming?.paymentVerified === true;
+  // Revoke demotes to pending. Otherwise approval sticks — but never keep
+  // status "approved" when paymentVerified is false (sync-spoof leftovers).
+  let status = pickClientStatus(prev.status, incoming.status);
+  if (revoked && incoming?.paymentVerified !== true) status = 'pending';
+  else if (!paymentVerified && status === 'approved') status = 'pending';
   return {
     ...prev,
     ...incoming,
     email,
-    status: pickClientStatus(prev.status, incoming.status),
+    status,
     paymentClaimed:
       'paymentClaimed' in incoming
         ? Boolean(incoming.paymentClaimed)
-        : Boolean(prev.paymentClaimed),
-    paymentClaimedAt:
-      'paymentClaimedAt' in incoming
-        ? incoming.paymentClaimedAt || undefined
-        : prev.paymentClaimedAt,
+        : Boolean(prev.paymentClaimed) || Boolean(incoming.paymentClaimed),
+    paymentClaimedAt: incoming.paymentClaimedAt || prev.paymentClaimedAt,
+    // Mark-as-paid sticks. Re-register / I've Paid / Approve must not wipe it
+    // with an implicit paymentVerified:false. Explicit revokePaymentVerified clears.
+    paymentVerified,
+    paymentVerifiedSource: !paymentVerified
+      ? undefined
+      : incoming?.paymentVerified === true
+        ? incoming.paymentVerifiedSource || prev.paymentVerifiedSource || 'admin'
+        : prev.paymentVerifiedSource || incoming?.paymentVerifiedSource || undefined,
+    revokePaymentVerified: revoked && !paymentVerified ? true : undefined,
     licenseReleasedAt:
       'licenseReleasedAt' in incoming
         ? incoming.licenseReleasedAt || undefined
@@ -117,27 +131,57 @@ export function mergeClients(existing = [], incoming = []) {
   return [...byEmail.values()];
 }
 
+/** Supabase is the database. These names stay so older callers do not contact Firebase. */
 export async function firebaseRead(path) {
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/${path}.json`, { cache: 'no-store' });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
+  const { readStoredPath } = await import('./supabasePaths.mjs');
+  return readStoredPath(path);
 }
 
 export async function firebaseWrite(path, value) {
-  try {
-    const res = await fetch(`${FIREBASE_DB_URL}/${path}.json`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(value),
-    });
-    return res.ok;
-  } catch {
-    return false;
+  const { writeStoredPath } = await import('./supabasePaths.mjs');
+  return writeStoredPath(path, value);
+}
+
+/** Never let a stale pending push wipe a saved license key. */
+export function mergeSessionPreferLicense(prev, incoming) {
+  if (!incoming || typeof incoming !== 'object') return prev || incoming;
+  if (!prev || typeof prev !== 'object') return incoming;
+  const prevBot = prev.bot && typeof prev.bot === 'object' ? prev.bot : {};
+  const nextBot = incoming.bot && typeof incoming.bot === 'object' ? incoming.bot : {};
+  const incomingKey = String(nextBot.licenseKey || '').trim();
+  const prevKey = String(prevBot.licenseKey || '').trim();
+  const intentionalClear =
+    nextBot.licenseKey !== undefined &&
+    !incomingKey &&
+    String(incoming.accessStatus || '') !== 'licensed';
+  const licenseKey = intentionalClear ? '' : incomingKey || prevKey;
+  const incomingStatus = String(incoming.accessStatus || '').trim().toLowerCase();
+  // Respect an explicit pending/none demote — never re-license freeload PUTs from a leftover key.
+  const accessStatus = ['pending', 'none', ''].includes(incomingStatus) && !incomingKey
+    ? incoming.accessStatus || 'pending'
+    : licenseKey
+      ? incomingStatus === 'pending' || incomingStatus === 'none'
+        ? incoming.accessStatus
+        : 'licensed'
+      : intentionalClear
+        ? incoming.accessStatus || 'pending'
+        : incoming.accessStatus || prev.accessStatus || 'pending';
+  const merged = {
+    ...prev,
+    ...incoming,
+    accessStatus,
+    bot: {
+      ...prevBot,
+      ...nextBot,
+      licenseKey,
+    },
+  };
+  if (incoming.device == null) {
+    if (prev.device) merged.device = prev.device;
+  } else {
+    merged.device = preferSessionDevice(prev.device, incoming.device);
   }
+  return merged;
 }
 
 /** Live Firebase registrations merged with durable GitHub backup — never drop pending. */
@@ -168,6 +212,115 @@ export function mirrorClientToSuperWorkspace(workspaces, entry) {
 }
 
 /** Create or return existing client in Firebase — source of truth for live registrations. */
+/** Firebase session keys cannot contain . # $ [ ] / */
+export function sessionEmailKey(email) {
+  return String(email || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[.#$[\]/]/g, '_');
+}
+
+export function sessionDeviceKeys(email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  const keys = [];
+  const push = (key) => {
+    if (key && !keys.includes(key)) keys.push(key);
+  };
+  push(sessionEmailKey(normalized));
+  if (normalized.endsWith('.com')) push(normalized.slice(0, -4));
+  return keys;
+}
+
+/** Payment or an explicit approval upgrades a client who is already on file. */
+export function clientEntryPatch(existing, input) {
+  const wantApproved = normalizeClientStatus(input?.status || '') === 'approved';
+  const wantPaid = Boolean(input?.paymentClaimed);
+  if (!wantApproved && !wantPaid) return null;
+  const firstName = String(input?.firstName || '').trim() || existing?.firstName;
+  const lastName = String(input?.lastName || '').trim() || existing?.lastName;
+  return {
+    firstName,
+    lastName,
+    status: wantApproved ? 'approved' : existing?.status || 'pending',
+    paymentClaimed: wantPaid ? true : Boolean(existing?.paymentClaimed),
+    paymentClaimedAt: wantPaid
+      ? input?.paymentClaimedAt || existing?.paymentClaimedAt || new Date().toISOString()
+      : existing?.paymentClaimedAt,
+  };
+}
+
+// Short window only — website signup then APK/login on another phone was
+ // locking clients for a full day ("locked to another phone").
+const DEVICE_ACTIVE_MS = 10 * 60 * 1000;
+
+/** True while the locked phone is still considered online (heartbeat within 10m). */
+export function isSessionDeviceActive(device) {
+  if (!device?.id) return false;
+  const seen = Date.parse(device.lastSeenAt || device.claimedAt || '');
+  return Number.isFinite(seen) ? Date.now() - seen < DEVICE_ACTIVE_MS : false;
+}
+
+/**
+ * Soft device preference: same phone refreshes; a different phone always
+ * takes over (last login wins). Hard 24h lock blocked website→app switches.
+ */
+export function preferSessionDevice(stored, incoming) {
+  if (!incoming || typeof incoming !== 'object' || !incoming.id) return stored || incoming;
+  if (!stored || typeof stored !== 'object' || !stored.id) return incoming;
+  if (stored.id === incoming.id) {
+    return {
+      ...stored,
+      ...incoming,
+      claimedAt: stored.claimedAt || incoming.claimedAt,
+    };
+  }
+  return incoming;
+}
+
+export function sessionWithoutDevice(session) {
+  if (!session || typeof session !== 'object') return { session, previousLabel: '' };
+  const previousLabel = String(session.device?.label || '');
+  const releasedId = String(session.device?.id || '').trim();
+  const prevBlocked = Array.isArray(session.releasedDeviceIds)
+    ? session.releasedDeviceIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const next = {
+    ...session,
+    deviceReleasedAt: new Date().toISOString(),
+    releasedDeviceIds: releasedId
+      ? [...new Set([...prevBlocked, releasedId])].slice(-20)
+      : prevBlocked.slice(-20),
+  };
+  delete next.device;
+  return { session: next, previousLabel };
+}
+
+/** Old phone after reset-device — block silent heartbeat reclaim. */
+export function isReleasedDeviceId(session, deviceId) {
+  const id = String(deviceId || '').trim();
+  if (!id || !session || typeof session !== 'object') return false;
+  const blocked = Array.isArray(session.releasedDeviceIds) ? session.releasedDeviceIds : [];
+  return blocked.some((item) => String(item || '').trim() === id);
+}
+
+/** Drop the phone lock so the same email can sign in on a new device. */
+export async function firebaseClearSessionDevice(email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  let previousLabel = '';
+  for (const key of sessionDeviceKeys(normalized)) {
+    const session = await firebaseRead(`lumo/sessions/${key}`);
+    if (session && typeof session === 'object' && session.device?.label) {
+      previousLabel = previousLabel || String(session.device.label);
+    }
+    await firebaseWrite(`lumo/sessions/${key}/device`, null);
+  }
+  return { ok: true, email: normalized, previousLabel };
+}
+
 export async function firebasePostClientEntry(input) {
   const email = normalizeRegistrationEmail(input.email);
   if (!isRegistrationEmail(email)) return null;
@@ -178,6 +331,10 @@ export async function firebasePostClientEntry(input) {
   const freshClients = toArray(await firebaseRead('lumo/clients'));
   const existing = freshClients.find((c) => String(c.email || '').toLowerCase() === email);
   if (existing) {
+    const upgrade = clientEntryPatch(existing, { ...input, firstName, lastName });
+    if (upgrade) {
+      return firebasePatchClientById(email, upgrade);
+    }
     const remoteWs = (await firebaseRead('lumo/store/workspaces')) || {};
     const nextWs = mirrorClientToSuperWorkspace(remoteWs, existing);
     const sid = 'LM-004821';
@@ -197,6 +354,7 @@ export async function firebasePostClientEntry(input) {
     notifiedAt: new Date().toISOString(),
     paymentClaimed: Boolean(input.paymentClaimed),
     paymentClaimedAt: input.paymentClaimedAt || undefined,
+    paymentVerified: Boolean(input.paymentVerified),
   };
   freshClients.unshift(entry);
 
@@ -272,11 +430,38 @@ export function publicAdminRecord(admin) {
   if (!admin || typeof admin !== 'object') return admin;
   const out = { ...admin };
   delete out.password;
+  delete out.portalPassword;
   return out;
+}
+
+/**
+ * Compact roster row for login/approve UIs — drops marketing fields that
+ * bloated GET /api/auth/admins to ~326KB and froze mobile Safari.
+ */
+export function publicAdminRecordLite(admin) {
+  if (!admin || typeof admin !== 'object') return admin;
+  const role = normalizeAdminRole(admin.role);
+  const row = {
+    id: admin.id,
+    email: admin.email,
+    fullName: admin.fullName || admin.mentorName || '',
+    role,
+  };
+  // Only inactive mentors need reason codes on the roster (keeps ~1.4k rows small).
+  if (admin.activityStatus && admin.activityStatus !== 'active') {
+    row.activityStatus = admin.activityStatus;
+  }
+  if (admin.inactiveReason) row.inactiveReason = admin.inactiveReason;
+  if (role === 'pending' && admin.phone) row.phone = admin.phone;
+  return row;
 }
 
 export function publicAdminList(list) {
   return toArray(list).map(publicAdminRecord);
+}
+
+export function publicAdminListLite(list) {
+  return toArray(list).map(publicAdminRecordLite);
 }
 
 export function publicDbSnapshot(db) {
@@ -289,14 +474,89 @@ export function publicDbSnapshot(db) {
       admin: next.auth.admin ? publicAdminRecord(next.auth.admin) : null,
     };
   }
+  delete next.passwordResets;
+  delete next.passwordResetLimits;
   return next;
 }
 
+export function findAdminByEmail(admins, email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  return (
+    toArray(admins).find(
+      (row) =>
+        String(row?.email || '')
+          .trim()
+          .toLowerCase() === normalized,
+    ) || null
+  );
+}
+
+export function isHashedPassword(stored) {
+  return String(stored || '').startsWith('sha256$');
+}
+
+export function hashPassword(password, salt) {
+  const s = String(salt || randomBytes(16).toString('hex'));
+  const digest = createHash('sha256').update(`${s}:${String(password || '')}`, 'utf8').digest('hex');
+  return `sha256$${s}$${digest}`;
+}
+
+export function passwordsMatch(stored, incoming) {
+  const value = String(stored || '');
+  const pass = String(incoming || '');
+  if (!value || !pass) return false;
+  if (isHashedPassword(value)) {
+    const parts = value.split('$');
+    const salt = parts[1] || '';
+    const digest = parts[2] || '';
+    const next = createHash('sha256').update(`${salt}:${pass}`, 'utf8').digest('hex');
+    return next === digest;
+  }
+  return value === pass;
+}
+
+/** Hash OR one-time readable portalPassword from mentors.json / reset flow. */
+export function mentorCredentialsMatch(admin, incoming) {
+  const pass = String(incoming || '');
+  if (!pass || !admin) return false;
+  if (passwordsMatch(admin.password, pass)) return true;
+  const portal = String(admin.portalPassword || '');
+  return Boolean(portal) && portal === pass;
+}
+
+export function hasMentorCredentials(admin) {
+  return Boolean(String(admin?.password || '') || String(admin?.portalPassword || ''));
+}
+
+export function loginResultFor(hit, email) {
+  const normalized = String(email || '')
+    .trim()
+    .toLowerCase();
+  const role = normalizeAdminRole(hit?.role);
+  const admin = publicAdminRecord({ ...hit, email: normalized, role });
+  if (role === 'pending' || (role !== 'admin' && role !== 'super')) {
+    return { ok: false, error: 'pending', admin };
+  }
+  if (role !== 'super' && String(hit?.activityStatus || '').toLowerCase() === 'inactive') {
+    return { ok: false, error: 'inactive', admin };
+  }
+  return { ok: true, admin };
+}
+
 /**
- * Verify mentor email+password against Firebase/local roster.
- * Returns a public admin record — never the password.
+ * Verify mentor email+password against the fast vault/backup first, then Firebase.
+ * Accepts password hash OR portalPassword (reset / register readable copy).
+ * Never blocks login on a full lumo/auth rewrite.
  */
-export async function verifyMentorLogin(email, password) {
+export async function verifyMentorLogin(
+  email,
+  password,
+  backupAdmins = [],
+  io = { read: firebaseRead, write: firebaseWrite },
+) {
   const normalized = String(email || '')
     .trim()
     .toLowerCase();
@@ -304,26 +564,47 @@ export async function verifyMentorLogin(email, password) {
   if (!normalized || !pass) {
     return { ok: false, error: 'invalid_credentials' };
   }
-  const curAuth = (await firebaseRead('lumo/auth')) || { admins: [] };
-  const fbAdmins = toArray(curAuth.admins);
-  const hit = fbAdmins.find(
-    (a) => String(a?.email || '').trim().toLowerCase() === normalized,
-  );
-  if (!hit) {
-    return { ok: false, error: 'invalid_credentials' };
+
+  const backupHit = findAdminByEmail(backupAdmins, normalized);
+
+  // Fast path: mentors.json / private roster already has credentials. Skip the
+  // multi‑MB lumo/auth download that froze mobile login for every attempt.
+  // Do not rewrite lumo/auth here — that RMW blocked the login response on Vercel.
+  if (backupHit && mentorCredentialsMatch(backupHit, pass)) {
+    const durable = isHashedPassword(backupHit.password)
+      ? backupHit.password
+      : hashPassword(pass);
+    return loginResultFor(
+      { ...backupHit, email: normalized, password: durable },
+      normalized,
+    );
   }
-  if (String(hit.password || '') !== pass) {
-    return { ok: false, error: 'invalid_credentials' };
+
+  let curAuth = null;
+  try {
+    curAuth = await io.read('lumo/auth');
+  } catch {
+    curAuth = null;
   }
-  const role = normalizeAdminRole(hit.role);
-  const admin = publicAdminRecord({ ...hit, email: normalized, role });
-  if (role === 'pending') {
-    return { ok: false, error: 'pending', admin };
+  const fbAdmins = toArray(curAuth?.admins);
+  const liveAdmins = fbAdmins;
+  const hit = findAdminByEmail(liveAdmins, normalized);
+  const chosen =
+    hit && backupHit ? mergeAdminsLive([hit], [backupHit])[0] : hit || backupHit || null;
+
+  if (chosen && mentorCredentialsMatch(chosen, pass)) {
+    const durable = isHashedPassword(chosen.password) ? chosen.password : hashPassword(pass);
+    return loginResultFor(
+      { ...chosen, email: normalized, password: durable },
+      normalized,
+    );
   }
-  if (role !== 'admin' && role !== 'super') {
-    return { ok: false, error: 'pending', admin };
+
+  if (!chosen) return { ok: false, error: 'not_registered' };
+  if (!hasMentorCredentials(chosen)) {
+    return { ok: false, error: 'password_reset_required' };
   }
-  return { ok: true, admin };
+  return { ok: false, error: 'invalid_credentials' };
 }
 
 export function pickAdminRole(a, b) {
@@ -335,6 +616,39 @@ export function pickAdminRole(a, b) {
 /** Never demote approved mentors — admin always beats pending. */
 export function pickAdminRoleLive(liveRole, backupRole) {
   return pickAdminRole(liveRole, backupRole);
+}
+
+export function resetStamp(admin) {
+  const stamp = Date.parse(admin?.passwordResetAt || '');
+  return Number.isFinite(stamp) ? stamp : 0;
+}
+
+/** Keep a stored password unless the incoming row was reset later. */
+export function choosePassword(prev, incoming) {
+  const prevPass = String(prev?.password || '');
+  const nextPass = String(incoming?.password || '');
+  if (!nextPass) return prevPass;
+  if (!prevPass) return nextPass;
+  if (resetStamp(incoming) > resetStamp(prev)) return nextPass;
+  return prevPass;
+}
+
+export function keepNewerPassword(prev, incoming, merged) {
+  merged.password = choosePassword(prev, incoming);
+  const prevPortal = String(prev?.portalPassword || '');
+  const nextPortal = String(incoming?.portalPassword || '');
+  if (resetStamp(incoming) > resetStamp(prev)) {
+    if (incoming?.passwordResetAt) merged.passwordResetAt = incoming.passwordResetAt;
+    if (incoming?.passwordResetBy) merged.passwordResetBy = incoming.passwordResetBy;
+    if (nextPortal) merged.portalPassword = nextPortal;
+    else if (prevPortal && !merged.portalPassword) merged.portalPassword = prevPortal;
+  } else {
+    if (prev?.passwordResetAt) merged.passwordResetAt = prev.passwordResetAt;
+    if (prev?.passwordResetBy) merged.passwordResetBy = prev.passwordResetBy;
+    if (prevPortal) merged.portalPassword = prevPortal;
+    else if (nextPortal) merged.portalPassword = nextPortal;
+  }
+  return merged;
 }
 
 export function mergeAdminsLive(live, backup) {
@@ -360,15 +674,13 @@ export function mergeAdminsLive(live, backup) {
     merged.role = pickAdminRole(prev.role, item.role);
     // Keep Firebase id so approve-by-id keeps matching
     if (prev.id) merged.id = prev.id;
-    const livePass = String(prev.password || '');
-    const backupPass = String(item.password || '');
-    if (livePass || backupPass) merged.password = livePass || backupPass;
     for (const [k, v] of Object.entries(prev)) {
       const nextVal = item[k];
       if ((nextVal === '' || nextVal == null) && v !== '' && v != null) {
         merged[k] = v;
       }
     }
+    keepNewerPassword(prev, item, merged);
     byEmail.set(email, merged);
   }
   return [...byEmail.values()];

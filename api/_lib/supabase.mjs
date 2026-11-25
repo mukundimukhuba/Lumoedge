@@ -1,0 +1,115 @@
+/** Supabase connection for the Vercel API. This app is not Next.js, so there is no cookie middleware. */
+
+function firstEnv(names) {
+  for (const name of names) {
+    const value = String(process.env[name] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
+export function supabaseConfig() {
+  const url = firstEnv(['SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']).replace(/\/$/, '');
+  const publishableKey = firstEnv([
+    'SUPABASE_PUBLISHABLE_KEY',
+    'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  ]);
+  const secretKey = firstEnv(['SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY']);
+  return {
+    url,
+    publishableKey,
+    secretKey,
+    configured: Boolean(url && publishableKey),
+  };
+}
+
+const PING_MS = 8000;
+const UPLOAD_MS = 45000;
+
+async function ping(url, key, path) {
+  const response = await fetch(`${url}${path}`, {
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+    },
+    signal: AbortSignal.timeout(PING_MS),
+  });
+  let message = '';
+  if (!response.ok) {
+    try {
+      const body = await response.json();
+      message = String(body?.message || body?.error || '').slice(0, 180);
+    } catch {
+      message = '';
+    }
+  }
+  return { ok: response.ok, status: response.status, message };
+}
+
+export async function supabaseStatus() {
+  const config = supabaseConfig();
+  if (!config.configured) {
+    return {
+      ok: false,
+      configured: false,
+      auth: false,
+      database: false,
+    };
+  }
+
+  let auth = { ok: false, status: 0, message: '' };
+  try {
+    auth = await ping(config.url, config.publishableKey, '/auth/v1/health');
+  } catch {
+    auth = { ok: false, status: 0, message: 'Auth request timed out or failed' };
+  }
+
+  let database = { ok: false, status: 0, message: '' };
+  if (!config.secretKey) {
+    database = {
+      ok: false,
+      status: 0,
+      message: 'Add the Supabase secret key to read and write the database.',
+    };
+  } else {
+    try {
+      database = await ping(config.url, config.secretKey, '/rest/v1/');
+    } catch {
+      database = { ok: false, status: 0, message: 'Database request timed out or failed' };
+    }
+  }
+
+  return {
+    ok: auth.ok,
+    configured: true,
+    auth: auth.ok,
+    database: database.ok,
+    databaseMessage: database.ok ? undefined : database.message || undefined,
+    degraded: !auth.ok || !database.ok,
+  };
+}
+
+/** Create or replace a private JSON file. New files are created with POST. */
+export async function uploadPrivateJson(objectPath, value) {
+  const config = supabaseConfig();
+  if (!config.url || !config.secretKey || !objectPath) return false;
+  const url = `${config.url}/storage/v1/object/lumo-private/${objectPath}`;
+  const init = {
+    headers: {
+      apikey: config.secretKey,
+      Authorization: `Bearer ${config.secretKey}`,
+      'Content-Type': 'application/json',
+      'x-upsert': 'true',
+    },
+    body: JSON.stringify(value ?? {}),
+    signal: AbortSignal.timeout(UPLOAD_MS),
+  };
+  try {
+    const posted = await fetch(url, { ...init, method: 'POST' });
+    if (posted.ok) return true;
+    const updated = await fetch(url, { ...init, method: 'PUT' });
+    return updated.ok;
+  } catch {
+    return false;
+  }
+}

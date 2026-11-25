@@ -1,12 +1,13 @@
-import { firebaseRead, firebaseWrite } from './clientMerge.mjs';
-import { mergeDatabases } from './mergeDb.mjs';
 import { vaultEntryToLicense } from './repairLicenses.mjs';
+import { banReason, isBannedAdminId, isBannedEmail, isBannedLicenseKey } from './bannedAccounts.mjs';
 import {
   assignEntry,
   dbList,
   findVaultEntry,
   findWorkspaceLicense,
   keysMatch,
+  keysMatchExact,
+  keyFingerprint,
   releaseEntry,
   toClaimPayload,
   validateEmailAccess,
@@ -20,57 +21,63 @@ function vaultArray(raw) {
   return [];
 }
 
-export async function loadFirebaseVault() {
+async function savedRecoveryDb() {
   try {
-    return vaultArray(await firebaseRead('lumo/vault'));
-  } catch {
-    return [];
-  }
-}
-
-async function saveFirebaseVault(entries) {
-  const ok = await firebaseWrite('lumo/vault', entries);
-  if (!ok) throw new Error('Could not save license vault');
-}
-
-async function loadWorkspace(adminId) {
-  if (!adminId) return null;
-  try {
-    const row = await firebaseRead(`lumo/store/workspaces/${encodeURIComponent(adminId)}`);
-    return row && typeof row === 'object' ? row : null;
+    const { loadRecoveryDb } = await import('./phoneRecover.mjs');
+    return await loadRecoveryDb();
   } catch {
     return null;
   }
 }
 
+async function rememberRecovery(patch) {
+  try {
+    const { mergeRecoveryPatch } = await import('./phoneRecover.mjs');
+    return Boolean(await mergeRecoveryPatch(patch));
+  } catch {
+    return false;
+  }
+}
+
+export async function loadFirebaseVault() {
+  const { loadLicenseVault } = await import('./licenseVaultStore.mjs');
+  const vault = await loadLicenseVault();
+  if (Array.isArray(vault) && vault.length) return vaultArray(vault);
+  return [];
+}
+
+async function saveFirebaseVault(entries) {
+  const { mergeLicenseVault } = await import('./licenseVaultStore.mjs');
+  const list = vaultArray(entries);
+  const saved = await mergeLicenseVault(list);
+  if (!saved) throw new Error('Could not save license vault');
+}
+
+async function loadLicenseEntry(key) {
+  // Per-key store ONLY — never touch recovery/db.json here (8MB+ → 429/timeout).
+  const { loadLicenseByKey } = await import('./licenseVaultStore.mjs');
+  const direct = await loadLicenseByKey(key);
+  if (direct) return direct;
+  return null;
+}
+
+async function loadWorkspace(adminId, recovery = null) {
+  if (!adminId) return null;
+  const db = recovery || (await savedRecoveryDb());
+  const saved = db?.store?.workspaces?.[adminId];
+  return saved && typeof saved === 'object' ? saved : null;
+}
+
 async function saveWorkspace(adminId, workspace) {
-  const ok = await firebaseWrite(
-    `lumo/store/workspaces/${encodeURIComponent(adminId)}`,
-    workspace,
-  );
-  if (!ok) throw new Error('Could not save workspace licenses');
-}
-
-function applyRevokedKeys(entries, revokedKeys) {
-  const revoked = dbList(revokedKeys)
-    .map((key) => String(key || '').trim())
-    .filter(Boolean);
-  if (!revoked.length) return entries;
-  return dbList(entries).map((entry) => {
-    if (!entry?.key) return entry;
-    const hit = revoked.some((key) => keysMatch(entry.key, key));
-    return hit ? { ...entry, revoked: true, status: 'deleted' } : entry;
+  const saved = await rememberRecovery({
+    images: {},
+    store: { workspaces: { [adminId]: workspace } },
   });
+  if (!saved) throw new Error('Could not save workspace licenses');
 }
 
-function workspaceMap(adminId, workspace) {
-  if (!adminId || !workspace) return {};
-  return { [adminId]: workspace };
-}
-
-async function upsertWorkspaceLicense(adminId, key, patch, vaultEntry) {
-  if (!adminId || !key) return null;
-  const workspace = (await loadWorkspace(adminId)) || {
+function workspaceLicensePatch(workspace, adminId, key, patch, vaultEntry) {
+  const baseWs = workspace || {
     id: adminId,
     eas: [],
     licenses: [],
@@ -80,19 +87,62 @@ async function upsertWorkspaceLicense(adminId, key, patch, vaultEntry) {
     orders: [],
     revokedKeys: [],
   };
-  const licenses = dbList(workspace.licenses);
+  const licenses = dbList(baseWs.licenses);
   const existing = licenses.find(
     (license) => license && keysMatch(String(license.key || ''), key) && license.status !== 'deleted',
   );
   const base = existing || (vaultEntry ? vaultEntryToLicense(vaultEntry) : null);
-  if (!base) return workspace;
+  if (!base) return baseWs;
   const nextLicense = { ...base, ...patch, ownerAdminId: base.ownerAdminId || adminId };
   const nextLicenses = existing
     ? licenses.map((license) =>
         keysMatch(String(license?.key || ''), key) ? nextLicense : license,
       )
     : [nextLicense, ...licenses];
-  const next = { ...workspace, id: adminId, licenses: nextLicenses };
+  return { ...baseWs, id: adminId, licenses: nextLicenses };
+}
+
+function applyRevokedKeys(entries, revokedKeys) {
+  const revoked = dbList(revokedKeys)
+    .map((key) => String(key || '').trim())
+    .filter(Boolean);
+  if (!revoked.length) return entries;
+  const revokedFp = new Set(revoked.map((key) => keyFingerprint(key)).filter(Boolean));
+  return dbList(entries).map((entry) => {
+    if (!entry?.key) return entry;
+    const fp = keyFingerprint(entry.key);
+    const hit = fp && revokedFp.has(fp);
+    if (hit) return { ...entry, revoked: true, status: 'deleted' };
+    // Undo false deletes from older fuzzy revoke matching.
+    if (
+      String(entry.status || '').toLowerCase() === 'deleted' &&
+      entry.revoked &&
+      fp &&
+      !revokedFp.has(fp)
+    ) {
+      return {
+        ...entry,
+        revoked: false,
+        status: entry.assignedEmail ? 'assigned' : 'active',
+      };
+    }
+    return entry;
+  });
+}
+
+function findVaultEntryAny(vault, key) {
+  return dbList(vault).find((entry) => entry && keysMatchExact(String(entry.key || ''), key));
+}
+
+function workspaceMap(adminId, workspace) {
+  if (!adminId || !workspace) return {};
+  return { [adminId]: workspace };
+}
+
+async function upsertWorkspaceLicense(adminId, key, patch, vaultEntry) {
+  if (!adminId || !key) return null;
+  const workspace = await loadWorkspace(adminId);
+  const next = workspaceLicensePatch(workspace, adminId, key, patch, vaultEntry);
   await saveWorkspace(adminId, next);
   return next;
 }
@@ -115,47 +165,157 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    const currentVault = await loadFirebaseVault();
+    // Prefer a single key from the body — never hydrate from recovery/db.json.
+    let prior = null;
+    if (key && !vaultEntries.length) {
+      try {
+        prior = await loadLicenseEntry(key);
+      } catch {
+        prior = null;
+      }
+    }
     const incomingVault = vaultEntries.length
       ? vaultEntries
       : key
         ? [
             {
-              ...(findVaultEntry(currentVault, key) || {}),
+              ...(prior || {}),
               key,
               adminId,
               ownerAdminId: adminId,
-              status: findVaultEntry(currentVault, key)?.status || 'active',
-              createdAt: findVaultEntry(currentVault, key)?.createdAt || new Date().toISOString(),
+              status: 'active',
+              clientEmail:
+                String(body?.clientEmail || body?.email || prior?.clientEmail || '').trim() ||
+                prior?.clientEmail ||
+                null,
+              email:
+                String(body?.clientEmail || body?.email || prior?.email || '').trim() ||
+                prior?.email ||
+                null,
+              plan: body?.plan || prior?.plan || null,
+              createdAt: prior?.createdAt || new Date().toISOString(),
+              assignedEmail: null,
+              assignedAt: null,
+              __forceRelease: true,
             },
           ]
         : [];
-
-    const existingWorkspace = adminId ? (await loadWorkspace(adminId)) || {} : {};
-    const merged = mergeDatabases(
-      {
-        vault: currentVault,
-        store: { workspaces: adminId ? { [adminId]: existingWorkspace } : {} },
-        revokedKeys: [],
-      },
-      {
-        vault: incomingVault,
-        store: {
-          workspaces: workspace && adminId ? { [adminId]: { ...workspace, id: adminId } } : {},
-        },
-        revokedKeys,
-      },
-    );
-    merged.vault = applyRevokedKeys(merged.vault, revokedKeys);
-    await saveFirebaseVault(merged.vault);
-    if (adminId && merged.store?.workspaces?.[adminId]) {
-      await saveWorkspace(adminId, merged.store.workspaces[adminId]);
+    // Cap workspace fan-out — publish must stay a small per-key write.
+    const fromWorkspace = dbList(workspace?.licenses)
+      .filter((lic) => lic && (!key || keysMatch(String(lic.key || ''), key)))
+      .slice(0, 5)
+      .map((lic) => ({
+        ...lic,
+        ownerAdminId: lic?.ownerAdminId || adminId,
+        adminId: lic?.adminId || adminId,
+      }));
+    const toSave = [...vaultArray(incomingVault), ...fromWorkspace];
+    if (!toSave.length) {
+      json(res, 400, { ok: false, error: 'adminId and license key required' });
+      return true;
     }
 
+    // Per-key objects — Claim reads these without touching recovery/db.json.
+    const { mergeLicenseVault } = await import('./licenseVaultStore.mjs');
+    const compactVault = await mergeLicenseVault(toSave);
+    if (!compactVault || !compactVault.length) {
+      json(res, 503, { ok: false, error: 'Could not save license vault' });
+      return true;
+    }
+    // Do NOT mirror into recovery/db.json on the request path — that object is
+    // overloaded and aborts Generate/Claim with timeouts.
+    const merged = { vault: compactVault };
+
+    // Respond first — email / mentor / commission must never delay Generate.
     json(res, 200, {
       ok: true,
       key: key || vaultEntries[0]?.key || '',
     });
+
+    void (async () => {
+      try {
+        const { notifyLicenseKey } = await import('./email/index.mjs');
+        const { markMentorActivitySatisfied } = await import('./mentorActivity.mjs');
+        const { firebaseRead, firebaseWrite } = await import('./clientMerge.mjs');
+        const licenses = [
+          ...incomingVault,
+          ...dbList(workspace?.licenses),
+          ...(key ? [findVaultEntry(merged.vault, key)].filter(Boolean) : []),
+        ];
+        const seen = new Set();
+        for (const license of licenses) {
+          const clientEmail = String(license?.clientEmail || license?.email || '')
+            .trim()
+            .toLowerCase();
+          const licenseKey = String(license?.key || '').trim();
+          if (!clientEmail || !licenseKey) continue;
+          const stamp = licenseKey.toUpperCase().replace(/[^A-Z0-9]/g, '');
+          if (seen.has(stamp)) continue;
+          seen.add(stamp);
+          void notifyLicenseKey(
+            { firebaseRead, firebaseWrite, firebasePush: null },
+            {
+              ...license,
+              email: clientEmail,
+              clientEmail,
+              key: licenseKey,
+              ownerAdminId: adminId,
+            },
+          ).catch(() => undefined);
+        }
+        if (adminId && seen.size) {
+          await markMentorActivitySatisfied(adminId, 'license');
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return true;
+  }
+
+  // Revalidate an already-stored key without re-assigning — Android / web boot gate.
+  if (path === '/api/licenses/verify' && req.method === 'POST') {
+    const body = await readBody(req);
+    const key = String(body?.key || '').trim();
+    const email = String(body?.email || '').trim().toLowerCase();
+    if (!key || !email) {
+      json(res, 400, { ok: false, error: 'Invalid key', valid: false });
+      return true;
+    }
+    if (isBannedEmail(email) || isBannedLicenseKey(key)) {
+      json(res, 403, { ok: false, error: banReason(), valid: false });
+      return true;
+    }
+    const { loadLicenseByKey } = await import('./licenseVaultStore.mjs');
+    const entry = await loadLicenseByKey(key);
+    if (entry === null) {
+      json(res, 503, { ok: false, error: 'unavailable', valid: false });
+      return true;
+    }
+    if (!entry) {
+      json(res, 200, { ok: true, valid: false, reason: 'not_found' });
+      return true;
+    }
+    if (
+      entry.revoked ||
+      String(entry.status || '').toLowerCase() === 'deleted' ||
+      String(entry.status || '').toLowerCase() === 'revoked'
+    ) {
+      json(res, 200, { ok: true, valid: false, reason: 'revoked' });
+      return true;
+    }
+    const assigned = String(entry.assignedEmail || '').toLowerCase();
+    const status = String(entry.status || '').toLowerCase();
+    if (status === 'assigned' && assigned && assigned !== email) {
+      json(res, 200, { ok: true, valid: false, reason: 'other_account' });
+      return true;
+    }
+    if (status === 'assigned' && assigned === email) {
+      json(res, 200, { ok: true, valid: true, license: toClaimPayload(entry) });
+      return true;
+    }
+    // Active but unassigned — not a live session grant.
+    json(res, 200, { ok: true, valid: false, reason: 'not_assigned' });
     return true;
   }
 
@@ -167,67 +327,193 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       json(res, 400, { ok: false, error: 'Invalid key' });
       return true;
     }
-
-    const vault = await loadFirebaseVault();
-    let entry = findVaultEntry(vault, key);
-    let ownerId = entry?.ownerAdminId || entry?.adminId || '';
-    let workspace = ownerId ? await loadWorkspace(ownerId) : null;
-
-    if (!entry) {
-      if (ownerId && workspace) {
-        const hit = findWorkspaceLicense(workspaceMap(ownerId, workspace), key);
-        if (hit) {
-          entry = hit.license;
-          ownerId = hit.ownerId || ownerId;
-        }
-      }
+    if (isBannedEmail(email) || isBannedLicenseKey(key)) {
+      json(res, 403, { ok: false, error: banReason() });
+      return true;
     }
 
-    if (!entry) {
+    // Per-key object only — does not depend on overloaded recovery/db.json.
+    const { loadLicenseByKey } = await import('./licenseVaultStore.mjs');
+    const probe = await loadLicenseByKey(key);
+    if (probe === null) {
+      json(res, 503, {
+        ok: false,
+        error: 'unavailable',
+        reason: 'vault_unavailable',
+        message:
+          'License storage is temporarily unavailable. Your key was not rejected — try Activate again shortly.',
+      });
+      return true;
+    }
+    if (!probe) {
       json(res, 400, { ok: false, error: 'Invalid key' });
       return true;
     }
-    if (entry.revoked || String(entry.status || '').toLowerCase() === 'revoked') {
+    let entry = probe;
+    let allWorkspaces = {};
+    let vault = [entry];
+
+    if (
+      entry.revoked ||
+      String(entry.status || '').toLowerCase() === 'deleted' ||
+      String(entry.status || '').toLowerCase() === 'revoked'
+    ) {
       json(res, 403, { ok: false, error: 'License revoked' });
       return true;
     }
 
-    const workspaces = workspaceMap(ownerId, workspace);
+    let ownerId = entry?.ownerAdminId || entry?.adminId || '';
+    let workspace = null;
+
+    const ownerAdmin = String(entry.ownerAdminId || entry.adminId || ownerId || '').trim();
+    if (isBannedAdminId(ownerAdmin)) {
+      json(res, 403, { ok: false, error: banReason() });
+      return true;
+    }
+
+    // Super Admin email is locked to Super Admin–owned keys only (Unlimited bull).
+    // Blocks mentors (e.g. Alpha X) from binding their keys onto mukundimukhuba8@.
+    try {
+      const { blocksAssignToSuperAdmin } = await import('./superPersonaLock.mjs');
+      if (blocksAssignToSuperAdmin(email, entry)) {
+        json(res, 403, {
+          ok: false,
+          error: 'super_admin_locked',
+          message:
+            'This email belongs to Super Admin. Only Unlimited bull licenses under LM-004821 can activate here.',
+        });
+        return true;
+      }
+    } catch {
+      /* fail open only if module missing — claim still gated below */
+    }
+
+    const workspaces = ownerId ? workspaceMap(ownerId, workspace) : allWorkspaces;
     const emailError = validateEmailAccess(entry, email, vault, workspaces);
     if (emailError) {
       json(res, 403, { ok: false, error: emailError });
       return true;
     }
 
+    // Payment wall — authoritative subscriptionStatus only (never trust UI "approved").
+    if (email) {
+      let paidOk = false;
+      let subStatus = 'pending_payment';
+      try {
+        const { findSubscription } = await import('./supabaseRoster.mjs');
+        const { listSubscriptions } = await import('./subscriptionVault.mjs');
+        const { canActivateLicense, resolveSubscriptionStatus } = await import(
+          './subscriptionStatus.mjs'
+        );
+        const merged = await Promise.race([
+          listSubscriptions().catch(() => []),
+          new Promise((resolve) => setTimeout(() => resolve([]), 8000)),
+        ]);
+        const client = findSubscription(merged, email);
+        subStatus = resolveSubscriptionStatus(client);
+        paidOk = canActivateLicense(client);
+      } catch {
+        paidOk = false;
+      }
+      if (!paidOk) {
+        try {
+          const { accessPath } = await import('./specialAccess.mjs');
+          const { firebaseRead } = await import('./clientMerge.mjs');
+          const special = await Promise.race([
+            firebaseRead(accessPath(email)),
+            new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+          ]);
+          paidOk = Boolean(
+            special &&
+              special.status === 'paid' &&
+              special.license?.key &&
+              keysMatchExact(special.license.key, key),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!paidOk) {
+        const { auditAsync } = await import('./auditLog.mjs');
+        auditAsync('license.claim_blocked', {
+          email,
+          keyFingerprint: keyFingerprint(key),
+          reason: 'payment_required',
+          subscriptionStatus: subStatus,
+        });
+        json(res, 402, {
+          ok: false,
+          error: 'payment_required',
+          subscriptionStatus: subStatus,
+          message:
+            subStatus === 'declined'
+              ? 'This subscription was declined. Contact Super Admin.'
+              : 'Payment must be confirmed by Super Admin before this license can activate. Account approval alone is not payment.',
+        });
+        return true;
+      }
+    }
+
+    // Already open for this email — return key only after payment confirmed above.
+    if (
+      String(entry.status || '').toLowerCase() === 'assigned' &&
+      String(entry.assignedEmail || '').toLowerCase() === email
+    ) {
+      json(res, 200, { ok: true, license: toClaimPayload(entry) });
+      return true;
+    }
+
     const assigned = assignEntry(entry, email);
     const nextVault = dbList(vault).map((item) => (keysMatch(item?.key, key) ? assigned : item));
     if (!findVaultEntry(nextVault, key)) nextVault.unshift(assigned);
-    await saveFirebaseVault(nextVault);
 
     ownerId = assigned.ownerAdminId || assigned.adminId || ownerId;
-    await upsertWorkspaceLicense(
-      ownerId,
-      key,
-      {
-        assignedEmail: assigned.assignedEmail || email,
-        assignedAt: assigned.assignedAt,
-        status: assigned.status || 'assigned',
-      },
-      assigned,
-    );
+    const nextWorkspace = ownerId
+      ? workspaceLicensePatch(
+          workspace || allWorkspaces[ownerId] || null,
+          ownerId,
+          key,
+          {
+            assignedEmail: assigned.assignedEmail || email,
+            assignedAt: assigned.assignedAt,
+            status: assigned.status || 'assigned',
+          },
+          assigned,
+        )
+      : null;
 
+    let saved = false;
     try {
-      const { tryQualifyCommission } = await import('./commissionEngine.mjs');
-      await tryQualifyCommission({
-        email,
-        source: 'claim',
-        actorId: 'system:license-claim',
+      await saveFirebaseVault(nextVault);
+      saved = true;
+    } catch {
+      saved = false;
+    }
+    if (!saved) {
+      json(res, 503, {
+        ok: false,
+        error: 'Could not activate that license. Tap Activate again.',
       });
-    } catch (err) {
-      console.warn('[commission] claim hook failed', err);
+      return true;
     }
 
     json(res, 200, { ok: true, license: toClaimPayload(assigned) });
+    void import('./auditLog.mjs').then(({ auditAsync }) =>
+      auditAsync('license.claim', {
+        email,
+        keyFingerprint: keyFingerprint(key),
+        ownerAdminId: assigned.ownerAdminId || assigned.adminId || '',
+      }),
+    );
+    void import('./commissionEngine.mjs')
+      .then(({ tryQualifyCommission }) =>
+        tryQualifyCommission({
+          email,
+          source: 'claim',
+          actorId: 'system:license-claim',
+        }),
+      )
+      .catch((err) => console.warn('[commission] claim hook failed', err));
     return true;
   }
 
@@ -240,8 +526,7 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    const vault = await loadFirebaseVault();
-    const entry = findVaultEntry(vault, key);
+    const entry = await loadLicenseEntry(key);
     if (!entry) {
       json(res, 400, { ok: false, error: 'Invalid key' });
       return true;
@@ -253,22 +538,12 @@ export async function handleLicenseRoutes(req, res, { json, readBody, pathname }
       return true;
     }
 
-    await saveFirebaseVault(
-      dbList(vault).map((item) => (keysMatch(item?.key, key) ? released.entry : item)),
-    );
-
-    const adminId = released.entry.ownerAdminId || released.entry.adminId || '';
-    await upsertWorkspaceLicense(
-      adminId,
-      key,
-      {
-        assignedEmail: null,
-        assignedAt: null,
-        status: 'active',
-        deviceId: null,
-      },
-      released.entry,
-    );
+    const { saveLicenseEntry } = await import('./licenseVaultStore.mjs');
+    const savedRow = await saveLicenseEntry(released.entry);
+    if (!savedRow) {
+      json(res, 503, { ok: false, error: 'Could not release that license.' });
+      return true;
+    }
     json(res, 200, { ok: true });
     return true;
   }
